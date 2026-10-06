@@ -1,0 +1,4414 @@
+"use client";
+
+import {
+  Activity,
+  AlertTriangle,
+  Gauge,
+  ShieldAlert,
+  BarChart3,
+  Bot,
+  Database,
+  Download,
+  FileText,
+  GitCompareArrows,
+  LayoutDashboard,
+  Loader2,
+  Plus,
+  Search,
+  Send,
+  Server,
+  Settings,
+  ShoppingCart,
+  Table2,
+  Trash2,
+  Upload,
+  Users,
+  Wallet,
+  X,
+} from "lucide-react";
+
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  Cell,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+import {
+  ChangeEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://127.0.0.1:8000";
+
+const SUPPORTED_EXTENSIONS = [
+  ".csv",
+  ".tsv",
+  ".xlsx",
+  ".xls",
+  ".json",
+  ".jsonl",
+  ".xml",
+  ".pdf",
+  ".docx",
+  ".parquet",
+  ".feather",
+  ".txt",
+  ".sas7bdat",
+  ".sav",
+  ".dta",
+];
+
+const FILE_ACCEPT = SUPPORTED_EXTENSIONS.join(",");
+
+function isSupportedFile(file: File) {
+  const name = file.name.toLowerCase();
+  return SUPPORTED_EXTENSIONS.some((extension) =>
+    name.endsWith(extension),
+  );
+}
+
+function fileKey(file: File) {
+  return `${file.name}-${file.size}-${file.lastModified}`;
+}
+
+/* =========================================================
+   TYPES
+========================================================= */
+
+type ModuleItem = {
+  name: string;
+  slug: string;
+};
+
+type Domain = {
+  module: string;
+  score: number;
+};
+
+type Profile = {
+  rows: number;
+  columns: number;
+  missing_cells: number;
+  missing_percentage: number;
+  duplicate_rows: number;
+  numeric_columns: string[];
+  categorical_columns: string[];
+  datetime_columns: string[];
+  column_names: string[];
+};
+
+type DataFrameResult = {
+  type: string;
+  rows: number;
+  columns_count: number;
+  columns: string[];
+  data: Record<string, unknown>[];
+};
+
+type ColumnMap = {
+  revenue?: string | null;
+  profit?: string | null;
+  quantity?: string | null;
+  order_id?: string | null;
+  product?: string | null;
+  category?: string | null;
+  customer?: string | null;
+  region?: string | null;
+  date?: string | null;
+
+  [key: string]: unknown;
+};
+
+type AnalyticsResults = {
+  [key: string]: unknown;
+};
+
+type AnalysisResponse = {
+  success: boolean;
+  filename: string;
+  module: string;
+  module_slug: string;
+  sheet?: string;
+
+  shape: {
+    rows: number;
+    columns: number;
+  };
+
+  columns: string[];
+
+  profile: Profile;
+
+  detected_domains?: Domain[];
+
+  analytics?: {
+    engine?: string;
+    functions_available?: number;
+    functions_executed?: number;
+    results?: AnalyticsResults;
+  };
+};
+
+type DatasetResult = {
+  id: string;
+  file: File;
+  analysis: AnalysisResponse | null;
+  loading: boolean;
+  error: string;
+};
+
+type ViewMode = "individual" | "compare";
+
+type MetricSummary = {
+  revenue?: number;
+  profit?: number;
+  quantity?: number;
+  customers?: number;
+  dataHealth?: number;
+};
+
+type ComparisonRow = {
+  id: string;
+  filename: string;
+  rows: number;
+  columns: number;
+  revenue?: number;
+  profit?: number;
+  customers?: number;
+  quantity?: number;
+  dataHealth?: number;
+};
+
+/* =========================================================
+   MODULES
+========================================================= */
+
+const fallbackModules: ModuleItem[] = [
+  { name: "Sales Analytics", slug: "sales" },
+  { name: "Customer Analytics", slug: "customer" },
+  { name: "Marketing Analytics", slug: "marketing" },
+  { name: "Financial Analytics", slug: "financial" },
+  { name: "Supply Chain Analytics", slug: "supply_chain" },
+  { name: "Product Analytics", slug: "product" },
+  { name: "Operations Analytics", slug: "operations" },
+  { name: "HR Analytics", slug: "hr" },
+  { name: "Fraud Analytics", slug: "fraud" },
+  { name: "Healthcare Analytics", slug: "healthcare" },
+  { name: "Manufacturing Analytics", slug: "manufacturing" },
+  { name: "E-commerce Analytics", slug: "ecommerce" },
+];
+
+const menu = [
+  { name: "Overview", icon: LayoutDashboard },
+  { name: "Data Sources", icon: Database },
+  { name: "Analytics", icon: BarChart3 },
+  { name: "AI Analyst", icon: Bot },
+  { name: "Reports", icon: FileText },
+];
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+function createId(file: File) {
+  return `${file.name}-${file.size}-${file.lastModified}-${Math.random()}`;
+}
+
+function numberValue(value: unknown) {
+  const converted = Number(value);
+
+  return Number.isFinite(converted)
+    ? converted
+    : 0;
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
+  const value = bytes / Math.pow(1024, index);
+
+  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
+}
+
+function formatNumber(value?: number) {
+  if (
+    value === undefined ||
+    value === null ||
+    Number.isNaN(value)
+  ) {
+    return "—";
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatCurrency(value?: number) {
+  if (
+    value === undefined ||
+    value === null ||
+    Number.isNaN(value)
+  ) {
+    return "—";
+  }
+
+  if (Math.abs(value) >= 1_000_000_000) {
+    return `$${(value / 1_000_000_000).toFixed(2)}B`;
+  }
+
+  if (Math.abs(value) >= 1_000_000) {
+    return `$${(value / 1_000_000).toFixed(2)}M`;
+  }
+
+  if (Math.abs(value) >= 1_000) {
+    return `$${(value / 1_000).toFixed(1)}K`;
+  }
+
+  return `$${value.toFixed(2)}`;
+}
+
+function formatPercent(value?: number) {
+  if (
+    value === undefined ||
+    value === null ||
+    Number.isNaN(value)
+  ) {
+    return "—";
+  }
+
+  const sign = value > 0 ? "+" : "";
+
+  return `${sign}${value.toFixed(1)}%`;
+}
+
+function percentDifference(
+  current?: number,
+  previous?: number,
+) {
+  if (
+    current === undefined ||
+    previous === undefined ||
+    previous === 0
+  ) {
+    return undefined;
+  }
+
+  return ((current - previous) / Math.abs(previous)) * 100;
+}
+
+function isDataFrameResult(value: unknown): value is DataFrameResult {
+  if (!value || typeof value !== "object") return false;
+
+  const candidate = value as Partial<DataFrameResult>;
+
+  return (
+    candidate.type === "dataframe" &&
+    Array.isArray(candidate.data)
+  );
+}
+
+function findDataFrameInValue(
+  value: unknown,
+  depth = 0,
+): DataFrameResult | null {
+  if (depth > 5 || value === null || value === undefined) {
+    return null;
+  }
+
+  if (isDataFrameResult(value)) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findDataFrameInValue(item, depth + 1);
+      if (found) return found;
+    }
+
+    return null;
+  }
+
+  if (typeof value === "object") {
+    for (const item of Object.values(
+      value as Record<string, unknown>,
+    )) {
+      const found = findDataFrameInValue(item, depth + 1);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
+
+function getDataFrame(
+  analysis: AnalysisResponse | null,
+): DataFrameResult | null {
+  const results = analysis?.analytics?.results;
+
+  if (!results) return null;
+
+  // Prefer the module's prepared-data result, e.g.
+  // prepare_sales_data, prepare_customer_data, prepare_hr_data, etc.
+  const preparedEntry = Object.entries(results).find(
+    ([key]) =>
+      key.startsWith("prepare_") &&
+      key.endsWith("_data"),
+  );
+
+  if (preparedEntry) {
+    const found = findDataFrameInValue(preparedEntry[1]);
+    if (found) return found;
+  }
+
+  // Fallback: recursively find any dataframe returned by the engine.
+  return findDataFrameInValue(results);
+}
+
+function looksLikeColumnMap(
+  value: unknown,
+): value is ColumnMap {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const entries = Object.entries(
+    value as Record<string, unknown>,
+  );
+
+  if (!entries.length) return false;
+
+  return entries.every(
+    ([, item]) =>
+      item === null ||
+      item === undefined ||
+      typeof item === "string" ||
+      typeof item === "number" ||
+      typeof item === "boolean",
+  );
+}
+
+function getColumnMap(
+  analysis: AnalysisResponse | null,
+): ColumnMap {
+  const results = analysis?.analytics?.results;
+
+  if (!results) return {};
+
+  // Prefer detect_<module>_columns from whichever module is active.
+  for (const [key, value] of Object.entries(results)) {
+    if (
+      key.startsWith("detect_") &&
+      key.endsWith("_columns") &&
+      looksLikeColumnMap(value)
+    ) {
+      return value;
+    }
+  }
+
+  // Some engines may use alternate names containing "column".
+  for (const [key, value] of Object.entries(results)) {
+    if (
+      key.toLowerCase().includes("column") &&
+      looksLikeColumnMap(value)
+    ) {
+      return value;
+    }
+  }
+
+  return {};
+}
+
+function findMappedColumn(
+  map: ColumnMap,
+  aliases: string[],
+): string | null {
+  const normalizedAliases = aliases.map((alias) =>
+    alias.toLowerCase(),
+  );
+
+  for (const [key, value] of Object.entries(map)) {
+    if (typeof value !== "string" || !value) continue;
+
+    const normalizedKey = key.toLowerCase();
+
+    if (
+      normalizedAliases.some(
+        (alias) =>
+          normalizedKey === alias ||
+          normalizedKey.includes(alias),
+      )
+    ) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function findActualColumn(
+  analysis: AnalysisResponse | null,
+  aliases: string[],
+): string | null {
+  if (!analysis) return null;
+
+  const normalizedAliases = aliases.map((alias) =>
+    alias.toLowerCase(),
+  );
+
+  const exact = analysis.columns.find((column) =>
+    normalizedAliases.includes(column.toLowerCase()),
+  );
+
+  if (exact) return exact;
+
+  return (
+    analysis.columns.find((column) => {
+      const normalized = column.toLowerCase();
+
+      return normalizedAliases.some(
+        (alias) =>
+          normalized.includes(alias) ||
+          alias.includes(normalized),
+      );
+    }) ?? null
+  );
+}
+
+function resolveColumn(
+  analysis: AnalysisResponse | null,
+  map: ColumnMap,
+  aliases: string[],
+): string | null {
+  return (
+    findMappedColumn(map, aliases) ??
+    findActualColumn(analysis, aliases)
+  );
+}
+
+function getModuleSlug(
+  analysis: AnalysisResponse | null,
+  selectedModule: string,
+) {
+  if (analysis?.module_slug) return analysis.module_slug;
+
+  return selectedModule
+    .replace(/\s+Analytics$/i, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_");
+}
+
+function getMetricSummary(
+  analysis: AnalysisResponse | null,
+): MetricSummary {
+  if (!analysis) {
+    return {};
+  }
+
+  const frame = getDataFrame(analysis);
+  const rows = frame?.data ?? [];
+
+  const map = getColumnMap(analysis);
+
+  // Do not depend only on detect_<module>_columns. Some engines return
+  // partial mappings, so fall back to the actual dataset column names.
+  const revenueColumn =
+    (typeof map.revenue === "string" ? map.revenue : null) ??
+    resolveColumn(analysis, map, ["revenue", "sales", "net_sales", "amount", "total"]);
+  const profitColumn =
+    (typeof map.profit === "string" ? map.profit : null) ??
+    resolveColumn(analysis, map, ["profit", "gross_profit", "net_profit", "margin"]);
+  const quantityColumn =
+    (typeof map.quantity === "string" ? map.quantity : null) ??
+    resolveColumn(analysis, map, ["quantity", "qty", "units", "units_sold"]);
+  const customerColumn =
+    (typeof map.customer === "string" ? map.customer : null) ??
+    resolveColumn(analysis, map, ["customer", "customer_id", "customer_name", "client"]);
+
+  let revenue: number | undefined;
+  let profit: number | undefined;
+  let quantity: number | undefined;
+  let customers: number | undefined;
+
+  if (revenueColumn) {
+    revenue = rows.reduce(
+      (sum, row) => sum + numberValue(row[revenueColumn]),
+      0,
+    );
+  }
+
+  if (profitColumn) {
+    profit = rows.reduce(
+      (sum, row) => sum + numberValue(row[profitColumn]),
+      0,
+    );
+  }
+
+  if (quantityColumn) {
+    quantity = rows.reduce(
+      (sum, row) => sum + numberValue(row[quantityColumn]),
+      0,
+    );
+  }
+
+  if (customerColumn) {
+    customers = new Set(
+      rows
+        .map((row) => row[customerColumn])
+        .filter(
+          (value) =>
+            value !== null &&
+            value !== undefined &&
+            value !== "",
+        )
+        .map(String),
+    ).size;
+  }
+
+  const dataHealth = Math.max(
+    0,
+    100 - analysis.profile.missing_percentage,
+  );
+
+  return {
+    revenue,
+    profit,
+    quantity,
+    customers,
+    dataHealth,
+  };
+}
+
+function aggregateBy(
+  rows: Record<string, unknown>[],
+  groupColumn: string | null | undefined,
+  valueColumn: string | null | undefined,
+) {
+  if (!groupColumn || !valueColumn) {
+    return [];
+  }
+
+  const totals: Record<string, number> = {};
+
+  rows.forEach((row) => {
+    const group = String(
+      row[groupColumn] ?? "Unknown",
+    );
+
+    totals[group] =
+      (totals[group] ?? 0) +
+      numberValue(row[valueColumn]);
+  });
+
+  return Object.entries(totals)
+    .map(([name, value]) => ({
+      name,
+      value: Number(value.toFixed(2)),
+    }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function aggregateMonthly(
+  rows: Record<string, unknown>[],
+  dateColumn: string | null | undefined,
+  valueColumn: string | null | undefined,
+) {
+  if (!dateColumn || !valueColumn) {
+    return [];
+  }
+
+  const totals: Record<string, number> = {};
+
+  rows.forEach((row) => {
+    const rawDate = row[dateColumn];
+
+    if (!rawDate) return;
+
+    const date = new Date(String(rawDate));
+
+    if (Number.isNaN(date.getTime())) {
+      return;
+    }
+
+    const key =
+      `${date.getFullYear()}-` +
+      `${String(date.getMonth() + 1).padStart(2, "0")}`;
+
+    totals[key] =
+      (totals[key] ?? 0) +
+      numberValue(row[valueColumn]);
+  });
+
+  return Object.entries(totals)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, value]) => {
+      const date = new Date(
+        `${month}-01T00:00:00`,
+      );
+
+      return {
+        month: date.toLocaleDateString(
+          "en-US",
+          {
+            month: "short",
+            year: "2-digit",
+          },
+        ),
+        value: Number(value.toFixed(2)),
+      };
+    });
+}
+
+function findCommonColumns(
+  analyses: AnalysisResponse[],
+) {
+  if (!analyses.length) return [];
+
+  let common = new Set(
+    analyses[0].columns.map((column) =>
+      column.toLowerCase(),
+    ),
+  );
+
+  for (const analysis of analyses.slice(1)) {
+    const columns = new Set(
+      analysis.columns.map((column) =>
+        column.toLowerCase(),
+      ),
+    );
+
+    common = new Set(
+      [...common].filter((column) =>
+        columns.has(column),
+      ),
+    );
+  }
+
+  return [...common];
+}
+
+/* =========================================================
+   PAGE
+========================================================= */
+
+export default function Home() {
+  const fileInputRef =
+    useRef<HTMLInputElement>(null);
+
+  const [modules, setModules] =
+    useState<ModuleItem[]>(fallbackModules);
+
+  const [selectedModule, setSelectedModule] =
+    useState("Sales Analytics");
+
+  const [activeMenu, setActiveMenu] =
+    useState("Overview");
+
+  const [datasets, setDatasets] =
+    useState<DatasetResult[]>([]);
+
+  const [activeDatasetId, setActiveDatasetId] =
+    useState<string | null>(null);
+
+  const [viewMode, setViewMode] =
+    useState<ViewMode>("individual");
+
+  const [crossFileResult, setCrossFileResult] =
+    useState<unknown>(null);
+
+  const [crossFileLoading, setCrossFileLoading] =
+    useState(false);
+
+  const [crossFileError, setCrossFileError] =
+    useState("");
+
+  const [apiOnline, setApiOnline] =
+    useState<boolean | null>(null);
+
+  const [globalError, setGlobalError] =
+    useState("");
+
+  const [aiQuestion, setAiQuestion] =
+    useState("");
+
+  const [aiMessages, setAiMessages] = useState<
+    { role: "user" | "assistant"; content: string }[]
+  >([]);
+
+  const [aiLoading, setAiLoading] =
+    useState(false);
+
+  const [aiError, setAiError] =
+    useState("");
+
+  const [searchQuery, setSearchQuery] =
+    useState("");
+
+  /* =======================================================
+     API HEALTH + MODULES
+  ======================================================= */
+
+  useEffect(() => {
+    async function initialize() {
+      try {
+        const health = await fetch(
+          `${API_URL}/api/health`,
+        );
+
+        setApiOnline(health.ok);
+      } catch {
+        setApiOnline(false);
+      }
+
+      try {
+        const response = await fetch(
+          `${API_URL}/api/modules`,
+        );
+
+        if (!response.ok) return;
+
+        const data = await response.json();
+
+        if (Array.isArray(data.modules)) {
+          setModules(data.modules);
+        }
+      } catch {
+        // fallback list remains
+      }
+    }
+
+    initialize();
+  }, []);
+
+  /* =======================================================
+     ACTIVE DATASET
+  ======================================================= */
+
+  const activeDataset = useMemo(() => {
+    if (!datasets.length) return null;
+
+    return (
+      datasets.find(
+        (dataset) =>
+          dataset.id === activeDatasetId,
+      ) ?? datasets[0]
+    );
+  }, [datasets, activeDatasetId]);
+
+  const analysis =
+    activeDataset?.analysis ?? null;
+
+
+  const filteredDatasets = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return datasets;
+
+    return datasets.filter((dataset) => {
+      const analysisText = dataset.analysis
+        ? [
+            dataset.analysis.filename,
+            dataset.analysis.module,
+            dataset.analysis.module_slug,
+            ...dataset.analysis.columns,
+          ].join(" ").toLowerCase()
+        : "";
+
+      return (
+        dataset.file.name.toLowerCase().includes(query) ||
+        analysisText.includes(query)
+      );
+    });
+  }, [datasets, searchQuery]);
+
+  const overviewStats = useMemo(() => {
+    const completed = datasets.filter((dataset) => dataset.analysis);
+    const totalRows = completed.reduce(
+      (sum, dataset) => sum + (dataset.analysis?.shape.rows ?? 0),
+      0,
+    );
+    const averageHealth = completed.length
+      ? completed.reduce(
+          (sum, dataset) =>
+            sum + Math.max(0, 100 - (dataset.analysis?.profile.missing_percentage ?? 100)),
+          0,
+        ) / completed.length
+      : 0;
+
+    return {
+      completed: completed.length,
+      totalRows,
+      averageHealth,
+    };
+  }, [datasets]);
+
+  const dataFrame = useMemo(
+    () => getDataFrame(analysis),
+    [analysis],
+  );
+
+  const rows = useMemo(
+    () => dataFrame?.data ?? [],
+    [dataFrame],
+  );
+
+  const columnMap = useMemo(
+    () => getColumnMap(analysis),
+    [analysis],
+  );
+
+  const metrics = useMemo(
+    () => getMetricSummary(analysis),
+    [analysis],
+  );
+
+  const salesColumns = useMemo(() => ({
+    revenue: resolveColumn(analysis, columnMap, ["revenue", "sales", "net_sales", "amount", "total"]),
+    date: resolveColumn(analysis, columnMap, ["date", "order_date", "transaction_date", "created_at"]),
+    category: resolveColumn(analysis, columnMap, ["category", "product_category", "segment"]),
+    region: resolveColumn(analysis, columnMap, ["region", "state", "country", "territory"]),
+    product: resolveColumn(analysis, columnMap, ["product", "product_name", "item", "sku"]),
+    customer: resolveColumn(analysis, columnMap, ["customer", "customer_id", "customer_name", "client"]),
+  }), [analysis, columnMap]);
+
+  const monthlyRevenue = useMemo(
+    () =>
+      aggregateMonthly(
+        rows,
+        salesColumns.date,
+        salesColumns.revenue,
+      ),
+    [rows, salesColumns],
+  );
+
+  const categoryRevenue = useMemo(
+    () =>
+      aggregateBy(
+        rows,
+        salesColumns.category,
+        salesColumns.revenue,
+      ).slice(0, 8),
+    [rows, salesColumns],
+  );
+
+  const regionRevenue = useMemo(
+    () =>
+      aggregateBy(
+        rows,
+        salesColumns.region,
+        salesColumns.revenue,
+      ).slice(0, 8),
+    [rows, salesColumns],
+  );
+
+  const productRevenue = useMemo(
+    () =>
+      aggregateBy(
+        rows,
+        salesColumns.product,
+        salesColumns.revenue,
+      ).slice(0, 8),
+    [rows, salesColumns],
+  );
+
+  /* =======================================================
+     COMPARISON DATA
+  ======================================================= */
+
+  const successfulAnalyses = useMemo(
+    () =>
+      datasets
+        .map((dataset) => dataset.analysis)
+        .filter(
+          (
+            item,
+          ): item is AnalysisResponse =>
+            item !== null,
+        ),
+    [datasets],
+  );
+
+  const comparisonRows =
+    useMemo<ComparisonRow[]>(() => {
+      return datasets
+        .filter(
+          (dataset) => dataset.analysis,
+        )
+        .map((dataset) => {
+          const summary =
+            getMetricSummary(
+              dataset.analysis,
+            );
+
+          return {
+            id: dataset.id,
+            filename:
+              dataset.analysis?.filename ??
+              dataset.file.name,
+
+            rows:
+              dataset.analysis?.shape.rows ??
+              0,
+
+            columns:
+              dataset.analysis?.shape
+                .columns ?? 0,
+
+            ...summary,
+          };
+        });
+    }, [datasets]);
+
+  const commonColumns = useMemo(
+    () =>
+      findCommonColumns(
+        successfulAnalyses,
+      ),
+    [successfulAnalyses],
+  );
+
+  /* =======================================================
+     FILE SELECTION
+  ======================================================= */
+
+  function openFilePicker() {
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileChange(
+    event: ChangeEvent<HTMLInputElement>,
+  ) {
+    const selected = Array.from(
+      event.target.files ?? [],
+    );
+
+    // Reset immediately so selecting the same file again still fires change.
+    event.target.value = "";
+
+    if (!selected.length) return;
+
+    setGlobalError("");
+    setCrossFileError("");
+    setCrossFileResult(null);
+
+    const accepted = selected.filter(isSupportedFile);
+    const rejected = selected.filter(
+      (file) => !isSupportedFile(file),
+    );
+
+    if (!accepted.length) {
+      setGlobalError(
+        `No supported files selected. Supported formats: ${SUPPORTED_EXTENSIONS.join(
+          ", ",
+        )}`,
+      );
+      return;
+    }
+
+    const existingKeys = new Set(
+      datasets.map((dataset) => fileKey(dataset.file)),
+    );
+
+    const uniqueAccepted = accepted.filter(
+      (file) => !existingKeys.has(fileKey(file)),
+    );
+
+    if (!uniqueAccepted.length) {
+      setGlobalError(
+        rejected.length
+          ? `Unsupported files ignored: ${rejected
+              .map((file) => file.name)
+              .join(", ")}. The remaining files are already loaded.`
+          : "Those files are already loaded.",
+      );
+      return;
+    }
+
+    const newDatasets: DatasetResult[] =
+      uniqueAccepted.map((file) => ({
+        id: createId(file),
+        file,
+        analysis: null,
+        loading: true,
+        error: "",
+      }));
+
+    const combinedDatasets = [
+      ...datasets,
+      ...newDatasets,
+    ];
+
+    setDatasets(combinedDatasets);
+
+    setActiveDatasetId(
+      newDatasets[0]?.id ??
+        combinedDatasets[0]?.id ??
+        null,
+    );
+
+    setViewMode("individual");
+
+    if (rejected.length) {
+      setGlobalError(
+        `Unsupported files ignored: ${rejected
+          .map((file) => file.name)
+          .join(", ")}`,
+      );
+    }
+
+    await analyzeAllFiles(newDatasets);
+
+    if (combinedDatasets.length >= 2) {
+      await analyzeCrossFiles(
+        combinedDatasets.map(
+          (dataset) => dataset.file,
+        ),
+      );
+    }
+  }
+
+  /* =======================================================
+     INDIVIDUAL ANALYSIS
+  ======================================================= */
+
+  async function analyzeSingleDataset(
+    dataset: DatasetResult,
+  ) {
+    try {
+      const formData = new FormData();
+
+      formData.append(
+        "file",
+        dataset.file,
+        dataset.file.name,
+      );
+
+      formData.append(
+        "module",
+        selectedModule,
+      );
+
+      const response = await fetch(
+        `${API_URL}/api/analyze`,
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
+
+      const body = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          typeof body?.detail === "string"
+            ? body.detail
+            : "Analysis failed.",
+        );
+      }
+
+      return body as AnalysisResponse;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async function analyzeAllFiles(
+    items: DatasetResult[],
+  ) {
+    const jobs = items.map(
+      async (dataset) => {
+        try {
+          const result =
+            await analyzeSingleDataset(
+              dataset,
+            );
+
+          setDatasets((current) =>
+            current.map((item) =>
+              item.id === dataset.id
+                ? {
+                    ...item,
+                    analysis: result,
+                    loading: false,
+                    error: "",
+                  }
+                : item,
+            ),
+          );
+
+          setApiOnline(true);
+        } catch (error) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Analysis failed.";
+
+          setDatasets((current) =>
+            current.map((item) =>
+              item.id === dataset.id
+                ? {
+                    ...item,
+                    loading: false,
+                    error: message,
+                  }
+                : item,
+            ),
+          );
+        }
+      },
+    );
+
+    await Promise.all(jobs);
+  }
+
+  /* =======================================================
+     CROSS FILE ANALYSIS
+  ======================================================= */
+
+  async function analyzeCrossFiles(
+    files: File[],
+  ) {
+    if (files.length < 2) return;
+
+    setCrossFileLoading(true);
+    setCrossFileError("");
+
+    try {
+      const formData = new FormData();
+
+      files.forEach((file) => {
+        formData.append(
+          "files",
+          file,
+          file.name,
+        );
+      });
+
+      const response = await fetch(
+        `${API_URL}/api/cross-file/analyze`,
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
+
+      const body = await response.json();
+
+      if (!response.ok) {
+        let message =
+          "Cross-file analysis failed.";
+
+        if (
+          typeof body?.detail === "string"
+        ) {
+          message = body.detail;
+        } else if (body?.detail) {
+          message = JSON.stringify(
+            body.detail,
+          );
+        }
+
+        throw new Error(message);
+      }
+
+      setCrossFileResult(body);
+    } catch (error) {
+      setCrossFileError(
+        error instanceof Error
+          ? error.message
+          : "Cross-file analysis failed.",
+      );
+    } finally {
+      setCrossFileLoading(false);
+    }
+  }
+
+  /* =======================================================
+     REMOVE / CLEAR
+  ======================================================= */
+
+  function removeDataset(id: string) {
+    const remaining =
+      datasets.filter(
+        (dataset) =>
+          dataset.id !== id,
+      );
+
+    setDatasets(remaining);
+
+    if (activeDatasetId === id) {
+      setActiveDatasetId(
+        remaining[0]?.id ?? null,
+      );
+    }
+
+    setCrossFileResult(null);
+    setCrossFileError("");
+
+    if (remaining.length < 2) {
+      setViewMode("individual");
+    }
+
+    if (remaining.length >= 2) {
+      analyzeCrossFiles(
+        remaining.map(
+          (dataset) => dataset.file,
+        ),
+      );
+    }
+  }
+
+  function clearAll() {
+    setDatasets([]);
+    setActiveDatasetId(null);
+    setCrossFileResult(null);
+    setCrossFileError("");
+    setGlobalError("");
+    setViewMode("individual");
+  }
+
+  /* =======================================================
+     MODULE CHANGE
+  ======================================================= */
+
+  async function handleModuleChange(
+    moduleName: string,
+  ) {
+    setSelectedModule(moduleName);
+
+    if (!datasets.length) {
+      return;
+    }
+
+    const reset = datasets.map(
+      (dataset) => ({
+        ...dataset,
+        analysis: null,
+        loading: true,
+        error: "",
+      }),
+    );
+
+    setDatasets(reset);
+
+    /*
+     * selectedModule state is asynchronous.
+     * Analyze with explicit module below.
+     */
+
+    const jobs = reset.map(
+      async (dataset) => {
+        try {
+          const formData =
+            new FormData();
+
+          formData.append(
+            "file",
+            dataset.file,
+            dataset.file.name,
+          );
+
+          formData.append(
+            "module",
+            moduleName,
+          );
+
+          const response =
+            await fetch(
+              `${API_URL}/api/analyze`,
+              {
+                method: "POST",
+                body: formData,
+              },
+            );
+
+          const body =
+            await response.json();
+
+          if (!response.ok) {
+            throw new Error(
+              typeof body?.detail ===
+                "string"
+                ? body.detail
+                : "Analysis failed.",
+            );
+          }
+
+          setDatasets((current) =>
+            current.map((item) =>
+              item.id === dataset.id
+                ? {
+                    ...item,
+                    analysis:
+                      body as AnalysisResponse,
+                    loading: false,
+                    error: "",
+                  }
+                : item,
+            ),
+          );
+        } catch (error) {
+          setDatasets((current) =>
+            current.map((item) =>
+              item.id === dataset.id
+                ? {
+                    ...item,
+                    loading: false,
+                    error:
+                      error instanceof Error
+                        ? error.message
+                        : "Analysis failed.",
+                  }
+                : item,
+            ),
+          );
+        }
+      },
+    );
+
+    await Promise.all(jobs);
+  }
+
+  /* =======================================================
+     KPI CARDS
+  ======================================================= */
+
+  const profitMargin =
+    metrics.revenue &&
+    metrics.profit !== undefined
+      ? (metrics.profit /
+          metrics.revenue) *
+        100
+      : undefined;
+
+  const cards = [
+    {
+      title: "Total Revenue",
+      value: formatCurrency(
+        metrics.revenue,
+      ),
+      subtitle: salesColumns.revenue
+        ? `Using ${salesColumns.revenue}`
+        : "Not detected",
+      icon: Wallet,
+    },
+    {
+      title: "Customers",
+      value: formatNumber(
+        metrics.customers,
+      ),
+      subtitle: salesColumns.customer
+        ? `Unique ${salesColumns.customer}`
+        : "Not detected",
+      icon: Users,
+    },
+    {
+      title: "Total Profit",
+      value: formatCurrency(
+        metrics.profit,
+      ),
+      subtitle:
+        profitMargin !== undefined
+          ? `${profitMargin.toFixed(
+              1,
+            )}% margin`
+          : "Not detected",
+      icon: BarChart3,
+    },
+    {
+      title: "Units Sold",
+      value: formatNumber(
+        metrics.quantity,
+      ),
+      subtitle:
+        metrics.dataHealth !== undefined
+          ? `${metrics.dataHealth.toFixed(
+              1,
+            )}% data health`
+          : "Waiting for dataset",
+      icon: ShoppingCart,
+    },
+  ];
+
+
+  function buildDatasetIntelligence(question: string): string {
+    if (!analysis) return "Analyze a dataset before asking NEXUS for insights.";
+
+    const frame = getDataFrame(analysis);
+    const rows = frame?.data ?? [];
+    const columns = frame?.columns ?? analysis.columns ?? [];
+    const profile = analysis.profile;
+    const numericColumns = (profile.numeric_columns ?? []).filter((column) =>
+      columns.includes(column),
+    );
+    const categoricalColumns = (profile.categorical_columns ?? []).filter((column) =>
+      columns.includes(column),
+    );
+
+    const lines: string[] = [];
+    lines.push(
+      `${analysis.filename} contains ${analysis.shape.rows.toLocaleString()} rows and ${analysis.shape.columns.toLocaleString()} columns in ${selectedModule}.`,
+    );
+
+    const missingPct = Number(profile.missing_percentage ?? 0);
+    const duplicates = Number(profile.duplicate_rows ?? 0);
+    lines.push(
+      `Data quality: ${Math.max(0, 100 - missingPct).toFixed(1)}% completeness, ${missingPct.toFixed(1)}% missing cells, and ${duplicates.toLocaleString()} duplicate rows.`,
+    );
+
+    const numericInsights = numericColumns
+      .map((column) => {
+        const values = rows
+          .map((row) => numberValue(row[column]))
+          .filter((value) => Number.isFinite(value));
+        if (!values.length) return null;
+        const total = values.reduce((sum, value) => sum + value, 0);
+        const avg = total / values.length;
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        return { column, total, avg, min, max, spread: max - min };
+      })
+      .filter(Boolean) as Array<{
+        column: string;
+        total: number;
+        avg: number;
+        min: number;
+        max: number;
+        spread: number;
+      }>;
+
+    if (numericInsights.length) {
+      const strongest = [...numericInsights]
+        .sort((a, b) => Math.abs(b.total) - Math.abs(a.total))
+        .slice(0, 3);
+      lines.push(
+        `Key numeric findings: ${strongest
+          .map(
+            (item) =>
+              `${item.column} averages ${compactNumber(item.avg)} (range ${compactNumber(item.min)}–${compactNumber(item.max)})`,
+          )
+          .join("; ")}.`,
+      );
+    }
+
+    const categoryInsights = categoricalColumns
+      .map((column) => {
+        const counts = new Map<string, number>();
+        for (const row of rows) {
+          const raw = row[column];
+          if (raw === null || raw === undefined || raw === "") continue;
+          const key = String(raw);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+        return ranked.length ? { column, ranked } : null;
+      })
+      .filter(Boolean) as Array<{
+        column: string;
+        ranked: Array<[string, number]>;
+      }>;
+
+    if (categoryInsights.length) {
+      const top = categoryInsights.slice(0, 3).map(({ column, ranked }) => {
+        const [name, count] = ranked[0];
+        const share = rows.length ? (count / rows.length) * 100 : 0;
+        return `${column}: ${name} leads with ${count.toLocaleString()} records (${share.toFixed(1)}%)`;
+      });
+      lines.push(`Leading categories: ${top.join("; ")}.`);
+    }
+
+    const q = question.toLowerCase();
+    if (q.includes("anomal") || q.includes("unusual") || q.includes("outlier")) {
+      if (numericInsights.length) {
+        const widest = [...numericInsights].sort((a, b) => b.spread - a.spread)[0];
+        lines.push(
+          `Anomaly focus: ${widest.column} has the widest observed range (${compactNumber(widest.min)} to ${compactNumber(widest.max)}). Review extreme records in this field first.`,
+        );
+      } else {
+        lines.push("No numeric field is available for a reliable range-based anomaly screen.");
+      }
+    }
+
+    if (
+      q.includes("recommend") ||
+      q.includes("action") ||
+      q.includes("management") ||
+      q.includes("business insight") ||
+      q.includes("key finding") ||
+      q.includes("summar")
+    ) {
+      const recommendations: string[] = [];
+      if (missingPct > 0) recommendations.push("prioritize the fields with missing values before downstream modeling");
+      if (duplicates > 0) recommendations.push(`review and resolve the ${duplicates.toLocaleString()} duplicate rows`);
+      if (categoryInsights.length) recommendations.push(`compare performance across ${categoryInsights[0].column} groups instead of relying only on the overall average`);
+      if (numericInsights.length) recommendations.push(`investigate the highest and lowest ${numericInsights[0].column} records to understand the main drivers`);
+      recommendations.push("validate these patterns with business context before making operational decisions");
+      lines.push(`Recommended actions: ${recommendations.slice(0, 5).join("; ")}.`);
+    }
+
+    if (!rows.length) {
+      lines.push(
+        "The analytics response did not expose row-level data to the frontend, so deeper rankings and distributions require the backend AI endpoint.",
+      );
+    }
+
+    return lines.join("\n\n");
+  }
+
+  async function askAiAnalyst() {
+    const question = aiQuestion.trim();
+    if (!question || aiLoading) return;
+
+    if (!activeDataset || !analysis) {
+      setAiError("Upload and analyze a dataset before asking the AI Analyst.");
+      return;
+    }
+
+    setAiMessages((current) => [
+      ...current,
+      { role: "user", content: question },
+    ]);
+    setAiQuestion("");
+    setAiError("");
+    setAiLoading(true);
+
+    try {
+      let response: Response | null = null;
+
+      // Preferred advanced endpoint. The request includes the current
+      // analysis context so the AI can reason about the active dataset.
+      response = await fetch(`${API_URL}/api/ai/v2/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question,
+          module: selectedModule,
+          filename: analysis.filename,
+          analysis,
+        }),
+      });
+
+      // Compatibility fallback for installations exposing the older
+      // multipart AI endpoint.
+      if (!response.ok && [404, 405, 415, 422].includes(response.status)) {
+        const formData = new FormData();
+        formData.append("file", activeDataset.file);
+        formData.append("question", question);
+        formData.append("module", selectedModule);
+
+        response = await fetch(`${API_URL}/api/ai/ask`, {
+          method: "POST",
+          body: formData,
+        });
+      }
+
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(
+          detail || `AI request failed with status ${response.status}`,
+        );
+      }
+
+      const payload: unknown = await response.json();
+
+      const endpointAnswer =
+        typeof payload === "string"
+          ? payload
+          : payload && typeof payload === "object"
+            ? String(
+                (payload as Record<string, unknown>).answer ??
+                  (payload as Record<string, unknown>).response ??
+                  (payload as Record<string, unknown>).message ??
+                  "",
+              )
+            : "";
+
+      const weakAnswer =
+        !endpointAnswer.trim() ||
+        /could not find|couldn't find|no matching kpi|no matching|current result|current dataset/i.test(
+          endpointAnswer,
+        );
+
+      const answer = weakAnswer
+        ? buildDatasetIntelligence(question)
+        : endpointAnswer;
+
+      setAiMessages((current) => [
+        ...current,
+        { role: "assistant", content: answer },
+      ]);
+    } catch (error) {
+      const localAnswer = buildDatasetIntelligence(question);
+      if (localAnswer) {
+        setAiMessages((current) => [
+          ...current,
+          { role: "assistant", content: localAnswer },
+        ]);
+        setAiError(
+          "AI service was unavailable, so NEXUS generated this answer directly from the analyzed dataset.",
+        );
+      } else {
+        setAiError(
+          error instanceof Error
+            ? error.message
+            : "Unable to contact the AI Analyst.",
+        );
+      }
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  function downloadTextFile(
+    filename: string,
+    content: string,
+    mimeType: string,
+  ) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function generateExecutiveReport(format: "html" | "json" | "csv") {
+    if (!analysis) {
+      setGlobalError("Analyze a dataset before generating a report.");
+      return;
+    }
+
+    const summary = {
+      generated_at: new Date().toISOString(),
+      dataset: analysis.filename,
+      sheet: analysis.sheet ?? "data",
+      module: selectedModule,
+      rows: analysis.shape.rows,
+      columns: analysis.shape.columns,
+      missing_percentage: analysis.profile.missing_percentage,
+      duplicate_rows: analysis.profile.duplicate_rows,
+      numeric_columns: analysis.profile.numeric_columns,
+      categorical_columns: analysis.profile.categorical_columns,
+      engine: analysis.analytics?.engine ?? "NEXUS Analytics",
+      functions_executed: analysis.analytics?.functions_executed ?? 0,
+      detected_domains: analysis.detected_domains ?? [],
+      executive_insights: buildDatasetIntelligence(
+        "Summarize the key findings and give actionable recommendations.",
+      ),
+    };
+
+    const safeName = analysis.filename.replace(/[^a-z0-9._-]+/gi, "_");
+
+    if (format === "json") {
+      downloadTextFile(
+        `${safeName}_nexus_report.json`,
+        JSON.stringify(summary, null, 2),
+        "application/json",
+      );
+      return;
+    }
+
+    if (format === "csv") {
+      const escapeCsv = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+      const csvRows = [
+        ["Metric", "Value"],
+        ["Generated At", summary.generated_at],
+        ["Dataset", summary.dataset],
+        ["Sheet", summary.sheet],
+        ["Module", summary.module],
+        ["Rows", summary.rows],
+        ["Columns", summary.columns],
+        ["Missing Percentage", summary.missing_percentage],
+        ["Duplicate Rows", summary.duplicate_rows],
+        ["Functions Executed", summary.functions_executed],
+        ["Numeric Columns", summary.numeric_columns.join(", ")],
+        ["Categorical Columns", summary.categorical_columns.join(", ")],
+      ];
+      downloadTextFile(
+        `${safeName}_nexus_report.csv`,
+        csvRows.map((row) => row.map(escapeCsv).join(",")).join("\n"),
+        "text/csv",
+      );
+      return;
+    }
+
+    const html = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>NEXUS Analytics Report</title>
+<style>
+body{font-family:Arial,sans-serif;margin:40px;color:#172033}
+h1{margin-bottom:4px}.muted{color:#667085}
+.card{border:1px solid #dfe4ea;border-radius:12px;padding:20px;margin:18px 0}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.metric{background:#f7f8fa;border-radius:10px;padding:16px}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid #dfe4ea;padding:9px;text-align:left}
+th{background:#f4f6f8}
+</style>
+</head>
+<body>
+<h1>NEXUS Analytics Studio</h1>
+<p class="muted">Executive Analytics Report · ${new Date().toLocaleString()}</p>
+<div class="card">
+<h2>${selectedModule}</h2>
+<p><strong>Dataset:</strong> ${analysis.filename}</p>
+<div class="grid">
+<div class="metric"><small>Rows</small><h3>${analysis.shape.rows.toLocaleString()}</h3></div>
+<div class="metric"><small>Columns</small><h3>${analysis.shape.columns.toLocaleString()}</h3></div>
+<div class="metric"><small>Missing</small><h3>${analysis.profile.missing_percentage.toFixed(1)}%</h3></div>
+<div class="metric"><small>Duplicates</small><h3>${analysis.profile.duplicate_rows.toLocaleString()}</h3></div>
+</div>
+</div>
+<div class="card">
+<h2>Dataset Structure</h2>
+<table><thead><tr><th>Type</th><th>Fields</th></tr></thead><tbody>
+<tr><td>Numeric</td><td>${analysis.profile.numeric_columns.join(", ") || "None"}</td></tr>
+<tr><td>Categorical</td><td>${analysis.profile.categorical_columns.join(", ") || "None"}</td></tr>
+<tr><td>Date / Time</td><td>${(analysis.profile.datetime_columns ?? []).join(", ") || "None detected"}</td></tr>
+</tbody></table>
+</div>
+<div class="card">
+<h2>Analytics Engine</h2>
+<p>${analysis.analytics?.engine ?? "NEXUS Analytics"} · ${analysis.analytics?.functions_executed ?? 0} functions executed</p>
+</div>
+</body></html>`;
+
+    downloadTextFile(
+      `${safeName}_nexus_report.html`,
+      html,
+      "text/html",
+    );
+  }
+
+  /* =======================================================
+     RENDER
+  ======================================================= */
+
+  return (
+    <div className="min-h-screen bg-[#080b12] text-white">
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept={FILE_ACCEPT}
+        className="hidden"
+        onChange={handleFileChange}
+      />
+
+      {/* SIDEBAR */}
+
+      <aside className="fixed left-0 top-0 z-30 hidden h-screen w-64 border-r border-white/10 bg-[#0b0f18] p-5 lg:block">
+        <div className="mb-10 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600 font-bold">
+            N
+          </div>
+
+          <div>
+            <h1 className="font-semibold tracking-wide">
+              NEXUS
+            </h1>
+
+            <p className="text-xs text-gray-500">
+              Analytics Studio
+            </p>
+          </div>
+        </div>
+
+        <p className="mb-3 px-3 text-xs font-medium uppercase tracking-wider text-gray-600">
+          Workspace
+        </p>
+
+        <nav className="space-y-1">
+          {menu.map((item) => {
+            const Icon = item.icon;
+
+            return (
+              <button
+                key={item.name}
+                onClick={() =>
+                  setActiveMenu(
+                    item.name,
+                  )
+                }
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition ${
+                  activeMenu ===
+                  item.name
+                    ? "bg-indigo-600/15 text-indigo-400"
+                    : "text-gray-400 hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                <Icon size={18} />
+                {item.name}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="mt-8 border-t border-white/10 pt-5">
+          <p className="mb-3 px-3 text-xs uppercase tracking-wider text-gray-600">
+            API
+          </p>
+
+          <div className="flex items-center gap-2 px-3 text-sm text-gray-400">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                apiOnline === true
+                  ? "bg-emerald-400"
+                  : apiOnline ===
+                      false
+                    ? "bg-red-400"
+                    : "bg-amber-400"
+              }`}
+            />
+
+            {apiOnline === true
+              ? "Backend connected"
+              : apiOnline === false
+                ? "Backend offline"
+                : "Checking backend"}
+          </div>
+        </div>
+
+        <div className="absolute bottom-5 left-5 right-5">
+          <button onClick={() => setActiveMenu("Overview")} className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-gray-400 hover:bg-white/5">
+            <Settings size={18} />
+            Workspace Home
+          </button>
+        </div>
+      </aside>
+
+      {/* MAIN */}
+
+      <main className="lg:ml-64">
+        {/* HEADER */}
+
+        <header className="sticky top-0 z-20 flex h-20 items-center justify-between border-b border-white/10 bg-[#080b12]/90 px-5 backdrop-blur-xl md:px-8">
+          <div>
+            <h2 className="text-xl font-semibold">
+              {activeMenu === "Analytics" || activeMenu === "Overview"
+                ? selectedModule
+                : activeMenu}
+            </h2>
+
+            <p className="hidden text-sm text-gray-500 sm:block">
+              Turn business data into
+              actionable intelligence.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="hidden items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 xl:flex">
+              <Search
+                size={17}
+                className="text-gray-500"
+              />
+
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                onFocus={() => setActiveMenu("Data Sources")}
+                placeholder="Search datasets or fields..."
+                className="w-52 bg-transparent text-sm outline-none"
+              />
+            </div>
+
+            <button
+              onClick={openFilePicker}
+              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium hover:bg-indigo-500"
+            >
+              <Plus size={17} />
+              Add Data
+            </button>
+          </div>
+        </header>
+
+        <div className="border-b border-white/10 bg-[#0b0f18] px-4 py-2 lg:hidden">
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {menu.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.name}
+                  onClick={() => setActiveMenu(item.name)}
+                  className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs transition ${
+                    activeMenu === item.name
+                      ? "bg-indigo-600/15 text-indigo-300"
+                      : "text-gray-400 hover:bg-white/5 hover:text-white"
+                  }`}
+                >
+                  <Icon size={15} />
+                  {item.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="p-5 md:p-8">
+          {activeMenu === "Overview" ? (
+            <section>
+              <div className="mb-7 flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
+                <div>
+                  <p className="text-sm font-medium text-indigo-400">WORKSPACE OVERVIEW</p>
+                  <h3 className="mt-2 text-3xl font-semibold">NEXUS Analytics Studio</h3>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-500">
+                    Monitor loaded data, analysis readiness and workspace health, then move directly into analytics, AI or reporting.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <button onClick={openFilePicker} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium hover:bg-indigo-500">
+                    <Plus size={17} /> Add Data
+                  </button>
+                  <button onClick={() => setActiveMenu("Analytics")} className="rounded-lg border border-white/10 px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5">
+                    Open Analytics
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <GenericKpiCard title="Datasets" value={formatNumber(datasets.length)} subtitle={`${overviewStats.completed} analyzed`} icon={Database} />
+                <GenericKpiCard title="Total Rows" value={formatNumber(overviewStats.totalRows)} subtitle="Across analyzed datasets" icon={Table2} />
+                <GenericKpiCard title="Average Health" value={overviewStats.completed ? `${overviewStats.averageHealth.toFixed(1)}%` : "—"} subtitle="Based on missing-data rate" icon={Activity} />
+                <GenericKpiCard title="Backend" value={apiOnline === true ? "Online" : apiOnline === false ? "Offline" : "Checking"} subtitle={API_URL} icon={Server} />
+              </div>
+
+              <div className="mt-5 grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+                <div className="rounded-2xl border border-white/[0.08] bg-[#0d131e] p-6">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-lg font-semibold">Recent Data Sources</h4>
+                      <p className="mt-1 text-sm text-gray-500">Latest datasets available in this browser session.</p>
+                    </div>
+                    <button onClick={() => setActiveMenu("Data Sources")} className="text-sm text-indigo-300 hover:text-indigo-200">View all</button>
+                  </div>
+                  <div className="mt-5 space-y-2">
+                    {datasets.length ? datasets.slice(-5).reverse().map((dataset) => (
+                      <button
+                        key={dataset.id}
+                        onClick={() => { setActiveDatasetId(dataset.id); setActiveMenu("Analytics"); setViewMode("individual"); }}
+                        className="flex w-full items-center justify-between gap-4 rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-left hover:bg-white/[0.04]"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">{dataset.file.name}</p>
+                          <p className="mt-1 text-xs text-gray-500">{formatBytes(dataset.file.size)}</p>
+                        </div>
+                        <span className={`shrink-0 text-xs ${dataset.loading ? "text-amber-300" : dataset.error ? "text-red-300" : "text-emerald-300"}`}>
+                          {dataset.loading ? "Analyzing" : dataset.error ? "Error" : "Ready"}
+                        </span>
+                      </button>
+                    )) : (
+                      <div className="rounded-xl border border-dashed border-white/10 p-8 text-center text-sm text-gray-500">No datasets loaded yet.</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/[0.08] bg-[#0d131e] p-6">
+                  <h4 className="text-lg font-semibold">Quick Actions</h4>
+                  <p className="mt-1 text-sm text-gray-500">Continue the workflow without hunting through the interface.</p>
+                  <div className="mt-5 space-y-3">
+                    {[
+                      ["Data Sources", "Manage uploaded files", Database],
+                      ["Analytics", "Explore charts and module intelligence", BarChart3],
+                      ["AI Analyst", "Ask questions about the active dataset", Bot],
+                      ["Reports", "Export executive summaries", FileText],
+                    ].map(([name, description, Icon]) => (
+                      <button key={String(name)} onClick={() => setActiveMenu(String(name))} className="flex w-full items-center gap-3 rounded-xl border border-white/[0.07] p-3 text-left hover:bg-white/[0.04]">
+                        <div className="rounded-lg bg-indigo-500/10 p-2 text-indigo-300"><Icon size={17} /></div>
+                        <div><p className="text-sm font-medium">{String(name)}</p><p className="text-xs text-gray-500">{String(description)}</p></div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </section>
+          ) : activeMenu === "Data Sources" ? (
+            <section>
+              <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
+                <div>
+                  <p className="text-sm font-medium text-indigo-400">DATA MANAGEMENT</p>
+                  <h3 className="mt-2 text-3xl font-semibold">Data Sources</h3>
+                  <p className="mt-2 text-sm text-gray-500">
+                    Manage every dataset loaded into the NEXUS workspace.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                    <Search size={16} className="text-gray-500" />
+                    <input
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                      placeholder="Filter datasets..."
+                      className="w-52 bg-transparent text-sm outline-none"
+                    />
+                  </div>
+                  <button
+                    onClick={openFilePicker}
+                    className="flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium hover:bg-indigo-500"
+                  >
+                    <Plus size={17} />
+                    Add Data
+                  </button>
+                </div>
+              </div>
+
+              {!datasets.length ? (
+                <div className="rounded-2xl border border-dashed border-white/15 bg-[#0d121d] p-12 text-center">
+                  <Database className="mx-auto text-indigo-400" size={34} />
+                  <h4 className="mt-4 text-lg font-semibold">No data sources loaded</h4>
+                  <p className="mt-2 text-sm text-gray-500">Upload a supported file to begin analysis.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-2xl border border-white/[0.08] bg-[#0d131e]">
+                  <div className="min-w-[760px] grid grid-cols-[minmax(220px,2fr)_1fr_1fr_1fr_auto] gap-4 border-b border-white/[0.07] px-5 py-3 text-xs uppercase tracking-wider text-gray-500">
+                    <span>Dataset</span><span>Status</span><span>Rows</span><span>Columns</span><span>Action</span>
+                  </div>
+                  {!filteredDatasets.length && (
+                    <div className="min-w-[760px] px-5 py-10 text-center text-sm text-gray-500">
+                      No datasets or fields match “{searchQuery}”.
+                    </div>
+                  )}
+                  {filteredDatasets.map((dataset) => (
+                    <div
+                      key={dataset.id}
+                      className="min-w-[760px] grid grid-cols-[minmax(220px,2fr)_1fr_1fr_1fr_auto] items-center gap-4 border-b border-white/[0.05] px-5 py-4 last:border-b-0"
+                    >
+                      <button
+                        onClick={() => {
+                          setActiveDatasetId(dataset.id);
+                          setActiveMenu("Analytics");
+                          setViewMode("individual");
+                        }}
+                        className="min-w-0 text-left"
+                      >
+                        <p className="truncate text-sm font-medium text-white">{dataset.file.name}</p>
+                        <p className="mt-1 text-xs text-gray-500">{formatBytes(dataset.file.size)}</p>
+                      </button>
+                      <span className={dataset.loading ? "text-amber-300" : dataset.error ? "text-red-300" : "text-emerald-300"}>
+                        {dataset.loading ? "Analyzing" : dataset.error ? "Error" : "Ready"}
+                      </span>
+                      <span className="text-sm text-gray-300">{dataset.analysis?.shape.rows?.toLocaleString() ?? "—"}</span>
+                      <span className="text-sm text-gray-300">{dataset.analysis?.shape.columns?.toLocaleString() ?? "—"}</span>
+                      <button
+                        onClick={() => removeDataset(dataset.id)}
+                        className="rounded-lg border border-red-500/20 p-2 text-red-300 hover:bg-red-500/10"
+                        title="Remove dataset"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : activeMenu === "AI Analyst" ? (
+            <section>
+              <div className="mb-7">
+                <p className="text-sm font-medium text-indigo-400">NEXUS INTELLIGENCE</p>
+                <h3 className="mt-2 text-3xl font-semibold">AI Analyst</h3>
+                <p className="mt-2 text-sm text-gray-500">
+                  Ask questions about the active analyzed dataset and receive contextual insights.
+                </p>
+              </div>
+
+              <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
+                <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0d131e]">
+                  <div className="border-b border-white/[0.07] px-5 py-4">
+                    <p className="font-medium">{analysis?.filename ?? "No active dataset"}</p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      {analysis ? `${selectedModule} · ${analysis.shape.rows.toLocaleString()} rows` : "Upload and analyze data first"}
+                    </p>
+                  </div>
+
+                  <div className="min-h-[420px] space-y-4 p-5">
+                    {!aiMessages.length && (
+                      <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
+                        <Bot size={38} className="text-indigo-400" />
+                        <h4 className="mt-4 font-semibold">Ask NEXUS about your data</h4>
+                        <p className="mt-2 max-w-lg text-sm leading-6 text-gray-500">
+                          Try: “Summarize this dataset”, “Find anomalies”, “What are the strongest trends?” or “What should management focus on?”
+                        </p>
+                      </div>
+                    )}
+
+                    {aiMessages.map((message, index) => (
+                      <div
+                        key={`${message.role}-${index}`}
+                        className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-6 ${
+                          message.role === "user"
+                            ? "ml-auto bg-indigo-600 text-white"
+                            : "border border-white/[0.08] bg-white/[0.04] text-gray-200"
+                        }`}
+                      >
+                        <pre className="whitespace-pre-wrap font-sans">{message.content}</pre>
+                      </div>
+                    ))}
+
+                    {aiLoading && (
+                      <div className="flex items-center gap-2 text-sm text-gray-400">
+                        <Loader2 size={16} className="animate-spin" />
+                        NEXUS is analyzing your question...
+                      </div>
+                    )}
+
+                    {aiError && (
+                      <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
+                        {aiError}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-3 border-t border-white/[0.07] p-4">
+                    <input
+                      value={aiQuestion}
+                      onChange={(event) => setAiQuestion(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          void askAiAnalyst();
+                        }
+                      }}
+                      placeholder={analysis ? "Ask a question about this dataset..." : "Analyze a dataset first..."}
+                      disabled={!analysis || aiLoading}
+                      className="min-w-0 flex-1 rounded-xl border border-white/10 bg-[#090e16] px-4 py-3 text-sm outline-none focus:border-indigo-500/50 disabled:opacity-50"
+                    />
+                    <button
+                      onClick={() => void askAiAnalyst()}
+                      disabled={!analysis || !aiQuestion.trim() || aiLoading}
+                      className="rounded-xl bg-indigo-600 px-4 text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Send size={18} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-white/[0.08] bg-[#0d131e] p-5">
+                    <h4 className="font-semibold">Active Context</h4>
+                    <div className="mt-4 space-y-3 text-sm">
+                      <div><p className="text-xs text-gray-500">Module</p><p className="mt-1">{selectedModule}</p></div>
+                      <div><p className="text-xs text-gray-500">Dataset</p><p className="mt-1 break-all">{analysis?.filename ?? "None"}</p></div>
+                      <div><p className="text-xs text-gray-500">Rows / Columns</p><p className="mt-1">{analysis ? `${analysis.shape.rows.toLocaleString()} / ${analysis.shape.columns}` : "—"}</p></div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/[0.08] bg-[#0d131e] p-5">
+                    <h4 className="font-semibold">Suggested Questions</h4>
+                    <div className="mt-4 space-y-2">
+                      {["Summarize the key findings.", "Find anomalies or unusual patterns.", "What are the top business insights?", "Give me 5 actionable recommendations."].map((question) => (
+                        <button
+                          key={question}
+                          onClick={() => setAiQuestion(question)}
+                          className="w-full rounded-lg border border-white/[0.07] px-3 py-2 text-left text-xs text-gray-400 hover:bg-white/[0.04] hover:text-white"
+                        >
+                          {question}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          ) : activeMenu === "Reports" ? (
+            <section>
+              <div className="mb-7">
+                <p className="text-sm font-medium text-indigo-400">EXECUTIVE OUTPUT</p>
+                <h3 className="mt-2 text-3xl font-semibold">Reports</h3>
+                <p className="mt-2 text-sm text-gray-500">
+                  Generate portable executive summaries from the active analysis.
+                </p>
+              </div>
+
+              {!analysis ? (
+                <div className="rounded-2xl border border-dashed border-white/15 bg-[#0d121d] p-12 text-center">
+                  <FileText className="mx-auto text-indigo-400" size={34} />
+                  <h4 className="mt-4 text-lg font-semibold">No report-ready analysis</h4>
+                  <p className="mt-2 text-sm text-gray-500">Upload and analyze a dataset before generating a report.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="grid gap-4 md:grid-cols-4">
+                    <GenericKpiCard title="Rows" value={formatNumber(analysis.shape.rows)} subtitle="Records analyzed" icon={Table2} />
+                    <GenericKpiCard title="Columns" value={formatNumber(analysis.shape.columns)} subtitle="Dataset fields" icon={Database} />
+                    <GenericKpiCard title="Data Health" value={`${Math.max(0, 100 - analysis.profile.missing_percentage).toFixed(1)}%`} subtitle={`${analysis.profile.missing_percentage.toFixed(1)}% missing`} icon={Activity} />
+                    <GenericKpiCard title="Functions" value={formatNumber(analysis.analytics?.functions_executed ?? 0)} subtitle="Analytics executed" icon={BarChart3} />
+                  </div>
+
+                  <div className="mt-5 grid gap-5 xl:grid-cols-2">
+                    <div className="rounded-2xl border border-white/[0.08] bg-[#0d131e] p-6">
+                      <h4 className="text-lg font-semibold">Executive Report</h4>
+                      <p className="mt-2 text-sm leading-6 text-gray-500">
+                        {analysis.filename} · {selectedModule}. Includes dataset profile, data quality, field structure and analytics-engine metadata.
+                      </p>
+                      <div className="mt-6 flex flex-wrap gap-3">
+                        <button onClick={() => generateExecutiveReport("html")} className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium hover:bg-indigo-500">
+                          <Download size={16} /> Download HTML
+                        </button>
+                        <button onClick={() => generateExecutiveReport("json")} className="flex items-center gap-2 rounded-lg border border-white/10 px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5">
+                          <Download size={16} /> Download JSON
+                        </button>
+                        <button onClick={() => generateExecutiveReport("csv")} className="flex items-center gap-2 rounded-lg border border-white/10 px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5">
+                          <Download size={16} /> Download CSV
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/[0.08] bg-[#0d131e] p-6">
+                      <h4 className="text-lg font-semibold">Report Details</h4>
+                      <div className="mt-5 space-y-3 text-sm">
+                        <div className="flex justify-between border-b border-white/[0.06] pb-3"><span className="text-gray-500">Dataset</span><span>{analysis.filename}</span></div>
+                        <div className="flex justify-between border-b border-white/[0.06] pb-3"><span className="text-gray-500">Module</span><span>{selectedModule}</span></div>
+                        <div className="flex justify-between border-b border-white/[0.06] pb-3"><span className="text-gray-500">Missing</span><span>{analysis.profile.missing_percentage.toFixed(2)}%</span></div>
+                        <div className="flex justify-between"><span className="text-gray-500">Duplicate rows</span><span>{analysis.profile.duplicate_rows.toLocaleString()}</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </section>
+          ) : (
+            <>
+          {/* INTRO */}
+
+          <section className="mb-7 flex flex-col justify-between gap-5 xl:flex-row xl:items-end">
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-sm text-indigo-400">
+                <Activity size={15} />
+                Enterprise Analytics
+                Workspace
+              </div>
+
+              <h3 className="text-3xl font-semibold">
+                {datasets.length
+                  ? `${datasets.length} dataset${
+                      datasets.length ===
+                      1
+                        ? ""
+                        : "s"
+                    } loaded`
+                  : "Transform your data into insights"}
+              </h3>
+
+              <p className="mt-2 text-sm text-gray-500">
+                Analyze files individually
+                or compare multiple datasets
+                together.
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-xs uppercase tracking-wider text-gray-500">
+                Analytics Module
+              </label>
+
+              <select
+                value={selectedModule}
+                onChange={(event) =>
+                  handleModuleChange(
+                    event.target.value,
+                  )
+                }
+                className="min-w-64 rounded-lg border border-white/10 bg-[#101622] px-4 py-2.5 text-sm text-gray-300 outline-none"
+              >
+                {modules.map(
+                  (module) => (
+                    <option
+                      key={module.slug}
+                      value={
+                        module.name
+                      }
+                    >
+                      {module.name}
+                    </option>
+                  ),
+                )}
+              </select>
+            </div>
+          </section>
+
+          {/* EMPTY UPLOAD */}
+
+          {!datasets.length && (
+            <section className="rounded-2xl border border-dashed border-white/15 bg-[#0d121d] p-12 text-center">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-500/10 text-indigo-400">
+                <Upload size={26} />
+              </div>
+
+              <h3 className="mt-5 text-lg font-semibold">
+                Upload your datasets
+              </h3>
+
+              <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-gray-500">
+                Select one or multiple supported data files.
+                NEXUS can work with CSV, Excel, JSON,
+                PDF, DOCX, Parquet, text and other
+                configured formats, then analyze each
+                dataset individually and compare
+                multiple files automatically.
+              </p>
+
+              <button
+                onClick={openFilePicker}
+                className="mt-6 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium hover:bg-indigo-500"
+              >
+                Select Files
+              </button>
+            </section>
+          )}
+
+          {globalError && (
+            <div className="mb-5 rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">
+              {globalError}
+            </div>
+          )}
+
+          {/* DATASETS */}
+
+          {!!datasets.length && (
+            <>
+              <section className="mb-5 rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-5">
+                <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+                  <div>
+                    <h3 className="font-semibold">
+                      Data Sources
+                    </h3>
+
+                    <p className="mt-1 text-sm text-gray-500">
+                      {
+                        datasets.length
+                      }{" "}
+                      file
+                      {datasets.length ===
+                      1
+                        ? ""
+                        : "s"}{" "}
+                      selected
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={
+                        openFilePicker
+                      }
+                      className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm text-gray-300 hover:bg-white/5"
+                    >
+                      <Plus size={15} />
+                      Add files
+                    </button>
+
+                    <button
+                      onClick={clearAll}
+                      className="flex items-center gap-2 rounded-lg border border-red-500/20 px-3 py-2 text-sm text-red-300 hover:bg-red-500/10"
+                    >
+                      <Trash2
+                        size={15}
+                      />
+                      Clear all
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {datasets.map(
+                    (dataset) => (
+                      <div
+                        key={
+                          dataset.id
+                        }
+                        className={`rounded-xl border p-4 transition ${
+                          activeDatasetId ===
+                          dataset.id
+                            ? "border-indigo-500/50 bg-indigo-500/[0.06]"
+                            : "border-white/10 bg-white/[0.02]"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <button
+                            onClick={() => {
+                              setActiveDatasetId(
+                                dataset.id,
+                              );
+
+                              setViewMode(
+                                "individual",
+                              );
+                            }}
+                            className="min-w-0 flex-1 text-left"
+                          >
+                            <p className="truncate text-sm font-medium">
+                              {
+                                dataset
+                                  .file
+                                  .name
+                              }
+                            </p>
+
+                            <p className="mt-1 text-xs text-gray-500">
+                              {dataset.loading
+                                ? "Analyzing..."
+                                : dataset.analysis
+                                  ? `${dataset.analysis.shape.rows} rows · ${dataset.analysis.shape.columns} columns`
+                                  : "Analysis unavailable"}
+                            </p>
+                          </button>
+
+                          {dataset.loading ? (
+                            <Loader2
+                              size={17}
+                              className="animate-spin text-indigo-400"
+                            />
+                          ) : dataset.error ? (
+                            <span className="h-2.5 w-2.5 rounded-full bg-red-400" />
+                          ) : (
+                            <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                          )}
+                        </div>
+
+                        {dataset.error && (
+                          <p className="mt-3 text-xs text-red-300">
+                            {
+                              dataset.error
+                            }
+                          </p>
+                        )}
+
+                        <button
+                          onClick={() =>
+                            removeDataset(
+                              dataset.id,
+                            )
+                          }
+                          className="mt-3 flex items-center gap-1 text-xs text-gray-500 hover:text-red-300"
+                        >
+                          <X size={13} />
+                          Remove
+                        </button>
+                      </div>
+                    ),
+                  )}
+                </div>
+              </section>
+
+              {/* VIEW SWITCH */}
+
+              <section className="mb-6 flex items-center justify-between gap-4">
+                <div className="inline-flex rounded-lg border border-white/10 bg-[#0d121d] p-1">
+                  <button
+                    onClick={() =>
+                      setViewMode(
+                        "individual",
+                      )
+                    }
+                    className={`rounded-md px-4 py-2 text-sm transition ${
+                      viewMode ===
+                      "individual"
+                        ? "bg-indigo-600 text-white"
+                        : "text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    Individual Analysis
+                  </button>
+
+                  <button
+                    disabled={
+                      datasets.length < 2
+                    }
+                    onClick={() =>
+                      setViewMode(
+                        "compare",
+                      )
+                    }
+                    className={`flex items-center gap-2 rounded-md px-4 py-2 text-sm transition ${
+                      viewMode ===
+                      "compare"
+                        ? "bg-indigo-600 text-white"
+                        : "text-gray-400 hover:text-white"
+                    } disabled:cursor-not-allowed disabled:opacity-30`}
+                  >
+                    <GitCompareArrows
+                      size={15}
+                    />
+                    Compare Files
+                  </button>
+                </div>
+              </section>
+
+              {viewMode ===
+              "individual" ? (
+                <IndividualDashboard
+                  selectedModule={
+                    selectedModule
+                  }
+                  dataset={
+                    activeDataset
+                  }
+                  analysis={
+                    analysis
+                  }
+                  metrics={
+                    metrics
+                  }
+                  cards={cards}
+                  monthlyRevenue={
+                    monthlyRevenue
+                  }
+                  categoryRevenue={
+                    categoryRevenue
+                  }
+                  regionRevenue={
+                    regionRevenue
+                  }
+                  productRevenue={
+                    productRevenue
+                  }
+                />
+              ) : (
+                <ComparisonDashboard
+                  rows={comparisonRows}
+                  analyses={successfulAnalyses}
+                  selectedModule={selectedModule}
+                  commonColumns={commonColumns}
+                  crossFileResult={
+                    crossFileResult
+                  }
+                  crossFileLoading={
+                    crossFileLoading
+                  }
+                  crossFileError={
+                    crossFileError
+                  }
+                />
+              )}
+            </>
+          )}
+            </>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+/* =========================================================
+   INDIVIDUAL DASHBOARD
+========================================================= */
+
+function IndividualDashboard({
+  selectedModule,
+  dataset,
+  analysis,
+  cards,
+  monthlyRevenue,
+  categoryRevenue,
+  regionRevenue,
+  productRevenue,
+}: {
+  selectedModule: string;
+  dataset: DatasetResult | null;
+  analysis: AnalysisResponse | null;
+  metrics: MetricSummary;
+
+  cards: {
+    title: string;
+    value: string;
+    subtitle: string;
+    icon: typeof Wallet;
+  }[];
+
+  monthlyRevenue: {
+    month: string;
+    value: number;
+  }[];
+
+  categoryRevenue: {
+    name: string;
+    value: number;
+  }[];
+
+  regionRevenue: {
+    name: string;
+    value: number;
+  }[];
+
+  productRevenue: {
+    name: string;
+    value: number;
+  }[];
+}) {
+  if (!dataset) {
+    return null;
+  }
+
+  if (dataset.loading) {
+    return (
+      <LoadingPanel text="Analyzing dataset..." />
+    );
+  }
+
+  if (dataset.error) {
+    return (
+      <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-6 text-red-300">
+        {dataset.error}
+      </div>
+    );
+  }
+
+  if (!analysis) {
+    return null;
+  }
+
+  const moduleSlug = getModuleSlug(
+    analysis,
+    selectedModule,
+  );
+
+  if (moduleSlug !== "sales") {
+    return (
+      <GenericModuleDashboard
+        analysis={analysis}
+        selectedModule={selectedModule}
+      />
+    );
+  }
+
+  return (
+    <>
+      <section className="mb-6 overflow-hidden rounded-2xl border border-white/[0.08] bg-gradient-to-r from-indigo-500/[0.10] via-[#101722] to-cyan-500/[0.05] p-5 shadow-[0_18px_55px_rgba(0,0,0,0.20)]">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">
+              Analytics workspace
+            </p>
+            <h2 className="mt-1 text-xl font-semibold tracking-tight">
+              {selectedModule}
+            </h2>
+          </div>
+
+          <span className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.08] px-3 py-1.5 text-xs font-medium text-emerald-300">
+            Analysis complete
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/[0.06] bg-black/10 p-4">
+          <div>
+            <p className="font-medium">
+              {analysis.filename}
+            </p>
+
+            <p className="mt-1 text-xs text-gray-500">
+              {analysis.shape.rows} rows ·{" "}
+              {analysis.shape.columns} columns
+              {analysis.sheet ? ` · ${analysis.sheet}` : ""}
+            </p>
+          </div>
+
+          <div className="text-right">
+            <p className="text-xs text-slate-500">Engine</p>
+            <p className="mt-1 text-xs font-medium text-slate-300">
+              {analysis.analytics?.engine ?? "NEXUS Analytics"}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* KPI */}
+
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {cards.map((card) => {
+          const Icon = card.icon;
+
+          return (
+            <div
+              key={card.title}
+              className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-5"
+            >
+              <div className="mb-5 flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+                <Icon size={18} />
+              </div>
+
+              <p className="text-sm text-gray-500">
+                {card.title}
+              </p>
+
+              <p className="mt-1 text-2xl font-semibold">
+                {card.value}
+              </p>
+
+              <p className="mt-2 text-xs text-gray-600">
+                {card.subtitle}
+              </p>
+            </div>
+          );
+        })}
+      </section>
+
+      {/* TREND */}
+
+      <section className="mt-5 rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-6">
+        <div className="mb-6">
+          <h3 className="font-semibold">
+            Revenue Trend
+          </h3>
+
+          <p className="mt-1 text-sm text-gray-500">
+            Revenue aggregated by month
+          </p>
+        </div>
+
+        {monthlyRevenue.length ? (
+          <div className="h-[320px]">
+            <ResponsiveContainer
+              width="100%"
+              height="100%"
+            >
+              <LineChart
+                data={monthlyRevenue}
+              >
+                <CartesianGrid
+                  stroke="#202635"
+                  strokeDasharray="3 3"
+                  vertical={false}
+                />
+
+                <XAxis
+                  dataKey="month"
+                  stroke="#6b7280"
+                  tickLine={false}
+                  axisLine={false}
+                />
+
+                <YAxis
+                  stroke="#6b7280"
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(value) =>
+                    compactNumber(
+                      Number(value),
+                    )
+                  }
+                />
+
+                <Tooltip
+                  contentStyle={{
+                    background:
+                      "#111827",
+                    border:
+                      "1px solid rgba(255,255,255,.1)",
+                    borderRadius: 10,
+                  }}
+                  formatter={(value) =>
+                    formatCurrency(
+                      Number(value),
+                    )
+                  }
+                />
+
+                <Line
+                  type="monotone"
+                  dataKey="value"
+                  stroke="#818cf8"
+                  strokeWidth={3}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <EmptyChart />
+        )}
+      </section>
+
+      <section className="mt-5 grid gap-5 xl:grid-cols-2">
+        <ChartCard
+          title="Revenue by Category"
+          subtitle="Top categories by revenue"
+          data={categoryRevenue}
+        />
+
+        <ChartCard
+          title="Revenue by Region"
+          subtitle="Regional performance"
+          data={regionRevenue}
+        />
+      </section>
+
+      <section className="mt-5 grid gap-5 xl:grid-cols-[2fr_1fr]">
+        <ChartCard
+          title="Product Performance"
+          subtitle="Top products by revenue"
+          data={productRevenue}
+        />
+
+        <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-6">
+          <div className="mb-5 flex items-center gap-3">
+            <Bot className="text-purple-400" />
+
+            <div>
+              <h3 className="font-semibold">
+                Data Intelligence
+              </h3>
+
+              <p className="text-xs text-gray-500">
+                Automatic dataset inspection
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <InfoBox
+              label="Analytics Engine"
+              value={
+                analysis.analytics
+                  ?.engine ?? "—"
+              }
+            />
+
+            <div className="grid grid-cols-2 gap-3">
+              <InfoBox
+                label="Missing"
+                value={`${analysis.profile.missing_percentage.toFixed(
+                  1,
+                )}%`}
+              />
+
+              <InfoBox
+                label="Duplicates"
+                value={String(
+                  analysis.profile
+                    .duplicate_rows,
+                )}
+              />
+            </div>
+
+            <InfoBox
+              label="Best Domain Match"
+              value={
+                analysis
+                  .detected_domains?.[0]
+                  ?.module ?? "—"
+              }
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* STRUCTURE */}
+
+      <section className="mt-5 rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-6">
+        <div className="mb-5 flex items-center gap-3">
+          <Table2
+            size={19}
+            className="text-indigo-400"
+          />
+
+          <div>
+            <h3 className="font-semibold">
+              Dataset Structure
+            </h3>
+
+            <p className="text-xs text-gray-500">
+              Columns detected by NEXUS
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {analysis.columns.map(
+            (column) => (
+              <span
+                key={column}
+                className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-gray-400"
+              >
+                {column}
+              </span>
+            ),
+          )}
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-4">
+          <InfoBox
+            label="Rows"
+            value={formatNumber(
+              analysis.shape.rows,
+            )}
+          />
+
+          <InfoBox
+            label="Numeric Columns"
+            value={String(
+              analysis.profile
+                .numeric_columns.length,
+            )}
+          />
+
+          <InfoBox
+            label="Categorical Columns"
+            value={String(
+              analysis.profile
+                .categorical_columns
+                .length,
+            )}
+          />
+
+          <InfoBox
+            label="Functions Executed"
+            value={String(
+              analysis.analytics
+                ?.functions_executed ??
+                0,
+            )}
+          />
+        </div>
+      </section>
+    </>
+  );
+}
+
+/* =========================================================
+   COMPARISON DASHBOARD
+========================================================= */
+
+
+type ModuleVisualConfig = {
+  primaryAliases: string[];
+  categoryAliases: string[];
+  secondaryCategoryAliases: string[];
+  dateAliases: string[];
+  metricLabel: string;
+  barTitle: string;
+  pieTitle: string;
+  trendTitle: string;
+};
+
+const MODULE_VISUALS: Record<string, ModuleVisualConfig> = {
+  customer: {
+    primaryAliases: ["customer_value", "lifetime_value", "ltv", "revenue", "sales", "spend", "amount", "orders", "purchases"],
+    categoryAliases: ["segment", "customer_segment", "region", "country", "state", "city", "customer_type"],
+    secondaryCategoryAliases: ["region", "country", "state", "city", "gender", "status", "channel"],
+    dateAliases: ["date", "order_date", "signup_date", "created_at", "purchase_date"],
+    metricLabel: "Customer value",
+    barTitle: "Customer Value by Segment",
+    pieTitle: "Customer Distribution",
+    trendTitle: "Customer Value Trend",
+  },
+  marketing: {
+    primaryAliases: ["conversions", "revenue", "clicks", "leads", "impressions", "spend", "cost", "roi"],
+    categoryAliases: ["channel", "campaign", "source", "platform", "medium"],
+    secondaryCategoryAliases: ["campaign", "source", "platform", "medium", "region"],
+    dateAliases: ["date", "campaign_date", "created_at", "month"],
+    metricLabel: "Marketing metric",
+    barTitle: "Performance by Channel",
+    pieTitle: "Marketing Mix",
+    trendTitle: "Marketing Performance Trend",
+  },
+  financial: {
+    primaryAliases: ["revenue", "income", "amount", "profit", "net_income", "sales", "expense", "cost"],
+    categoryAliases: ["category", "account", "department", "type", "region"],
+    secondaryCategoryAliases: ["department", "type", "region", "account"],
+    dateAliases: ["date", "transaction_date", "posting_date", "month"],
+    metricLabel: "Financial value",
+    barTitle: "Financial Performance by Category",
+    pieTitle: "Financial Mix",
+    trendTitle: "Financial Trend",
+  },
+  supply_chain: {
+    primaryAliases: ["quantity", "units", "inventory", "stock", "orders", "cost", "amount", "lead_time"],
+    categoryAliases: ["supplier", "warehouse", "category", "product", "region", "status"],
+    secondaryCategoryAliases: ["warehouse", "region", "status", "supplier"],
+    dateAliases: ["date", "order_date", "delivery_date", "ship_date"],
+    metricLabel: "Supply chain metric",
+    barTitle: "Supply Chain Performance",
+    pieTitle: "Supply Chain Distribution",
+    trendTitle: "Supply Chain Trend",
+  },
+  product: {
+    primaryAliases: ["revenue", "sales", "quantity", "units", "orders", "rating", "amount"],
+    categoryAliases: ["product", "product_name", "category", "brand", "type"],
+    secondaryCategoryAliases: ["category", "brand", "type", "status"],
+    dateAliases: ["date", "launch_date", "order_date", "created_at"],
+    metricLabel: "Product metric",
+    barTitle: "Product Performance",
+    pieTitle: "Product Mix",
+    trendTitle: "Product Trend",
+  },
+  operations: {
+    primaryAliases: ["output", "throughput", "actual", "quantity", "units", "orders", "duration", "downtime", "cost", "efficiency"],
+    categoryAliases: ["operation", "process", "department", "site", "location", "team", "status"],
+    secondaryCategoryAliases: ["department", "site", "location", "team", "status"],
+    dateAliases: ["date", "operation_date", "created_at", "month"],
+    metricLabel: "Operational metric",
+    barTitle: "Operational Performance",
+    pieTitle: "Operations Distribution",
+    trendTitle: "Operations Trend",
+  },
+  hr: {
+    primaryAliases: ["salary", "compensation", "employees", "headcount", "tenure", "performance_score", "age"],
+    categoryAliases: ["department", "job_role", "role", "team", "location"],
+    secondaryCategoryAliases: ["gender", "status", "attrition", "location", "department"],
+    dateAliases: ["date", "hire_date", "joining_date", "created_at"],
+    metricLabel: "HR metric",
+    barTitle: "Workforce by Department",
+    pieTitle: "Workforce Distribution",
+    trendTitle: "Workforce Trend",
+  },
+  fraud: {
+    primaryAliases: ["amount", "transaction_amount", "value", "loss", "fraud_amount"],
+    categoryAliases: ["fraud_type", "transaction_type", "category", "merchant", "channel"],
+    secondaryCategoryAliases: ["is_fraud", "fraud", "status", "channel", "category"],
+    dateAliases: ["date", "transaction_date", "timestamp", "created_at"],
+    metricLabel: "Transaction value",
+    barTitle: "Fraud Exposure by Category",
+    pieTitle: "Fraud Distribution",
+    trendTitle: "Fraud Activity Trend",
+  },
+  healthcare: {
+    primaryAliases: ["cost", "amount", "charges", "patients", "visits", "length_of_stay"],
+    categoryAliases: ["diagnosis", "department", "condition", "procedure", "hospital"],
+    secondaryCategoryAliases: ["gender", "outcome", "status", "department"],
+    dateAliases: ["date", "admission_date", "visit_date", "discharge_date"],
+    metricLabel: "Healthcare metric",
+    barTitle: "Healthcare Activity",
+    pieTitle: "Patient / Case Distribution",
+    trendTitle: "Healthcare Trend",
+  },
+  manufacturing: {
+    primaryAliases: ["production", "output", "quantity", "units", "defects", "downtime", "cycle_time", "oee", "efficiency"],
+    categoryAliases: ["machine", "line", "product", "plant", "shift"],
+    secondaryCategoryAliases: ["shift", "quality", "status", "plant", "line"],
+    dateAliases: ["date", "production_date", "timestamp", "month"],
+    metricLabel: "Manufacturing metric",
+    barTitle: "Production Performance",
+    pieTitle: "Manufacturing Distribution",
+    trendTitle: "Production Trend",
+  },
+  ecommerce: {
+    primaryAliases: ["revenue", "sales", "amount", "order_value", "quantity", "orders"],
+    categoryAliases: ["category", "product", "channel", "region", "device"],
+    secondaryCategoryAliases: ["payment_method", "channel", "region", "device", "status"],
+    dateAliases: ["date", "order_date", "purchase_date", "created_at"],
+    metricLabel: "E-commerce metric",
+    barTitle: "E-commerce Performance",
+    pieTitle: "Order Distribution",
+    trendTitle: "E-commerce Trend",
+  },
+};
+
+function normalizeColumnName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function moduleVisualKey(selectedModule: string) {
+  return normalizeColumnName(selectedModule)
+    .replace(/_analytics$/, "")
+    .replace(/^e_commerce$/, "ecommerce")
+    .replace(/^supply_chain$/, "supply_chain");
+}
+
+function chooseColumn(columns: string[], aliases: string[], excluded: string[] = []) {
+  const available = columns.filter((column) => !excluded.includes(column));
+  for (const alias of aliases) {
+    const exact = available.find((column) => normalizeColumnName(column) === alias);
+    if (exact) return exact;
+  }
+  for (const alias of aliases) {
+    const partial = available.find((column) => normalizeColumnName(column).includes(alias));
+    if (partial) return partial;
+  }
+  return null;
+}
+
+function chooseNumericColumn(columns: string[], aliases: string[]) {
+  return chooseColumn(columns, aliases) ?? columns[0] ?? null;
+}
+
+function chooseCategoryColumn(columns: string[], aliases: string[], excluded: string[] = []) {
+  return chooseColumn(columns, aliases, excluded) ?? columns.find((column) => !excluded.includes(column)) ?? null;
+}
+
+function aggregateCount(rows: Record<string, unknown>[], groupColumn: string | null | undefined) {
+  if (!groupColumn) return [];
+  const totals: Record<string, number> = {};
+  rows.forEach((row) => {
+    const raw = row[groupColumn];
+    const group =
+      raw === null || raw === undefined || raw === "" ? "Unknown" : String(raw);
+    totals[group] = (totals[group] ?? 0) + 1;
+  });
+  return Object.entries(totals)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function GenericBarChart({
+  title,
+  subtitle,
+  data,
+  valueLabel,
+}: {
+  title: string;
+  subtitle: string;
+  data: { name: string; value: number }[];
+  valueLabel: string;
+}) {
+  const chartData = data.slice(0, 10);
+  return (
+    <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] p-6 shadow-[0_14px_40px_rgba(0,0,0,0.18)]">
+      <div className="mb-5">
+        <h3 className="font-semibold">{title}</h3>
+        <p className="mt-1 text-sm text-gray-500">{subtitle}</p>
+      </div>
+      {chartData.length ? (
+        <div className="h-[320px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 30 }}>
+              <CartesianGrid stroke="#202635" strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="name" stroke="#6b7280" tickLine={false} axisLine={false} fontSize={11} angle={-20} textAnchor="end" height={65} />
+              <YAxis stroke="#6b7280" tickLine={false} axisLine={false} fontSize={11} tickFormatter={(value) => compactNumber(Number(value))} />
+              <Tooltip
+                contentStyle={{ background: "#111827", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10 }}
+                formatter={(value) => [formatNumber(Number(value)), valueLabel]}
+              />
+              <Bar dataKey="value" name={valueLabel} fill="#6366f1" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <EmptyChart />
+      )}
+    </div>
+  );
+}
+
+const PIE_COLORS = ["#6366f1", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#f43f5e"];
+
+function GenericPieChart({
+  title,
+  subtitle,
+  data,
+}: {
+  title: string;
+  subtitle: string;
+  data: { name: string; value: number }[];
+}) {
+  const chartData = data.slice(0, 6);
+  return (
+    <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] p-6 shadow-[0_14px_40px_rgba(0,0,0,0.18)]">
+      <div className="mb-5">
+        <h3 className="font-semibold">{title}</h3>
+        <p className="mt-1 text-sm text-gray-500">{subtitle}</p>
+      </div>
+      {chartData.length ? (
+        <div className="h-[320px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={chartData}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="46%"
+                innerRadius={58}
+                outerRadius={92}
+                paddingAngle={2}
+              >
+                {chartData.map((entry, index) => (
+                  <Cell key={`${entry.name}-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip
+                contentStyle={{ background: "#111827", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10 }}
+                formatter={(value) => formatNumber(Number(value))}
+              />
+              <Legend verticalAlign="bottom" height={48} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <EmptyChart />
+      )}
+    </div>
+  );
+}
+
+function GenericTrendChart({
+  title,
+  subtitle,
+  data,
+  valueLabel,
+}: {
+  title: string;
+  subtitle: string;
+  data: { month: string; value: number }[];
+  valueLabel: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] p-6 shadow-[0_14px_40px_rgba(0,0,0,0.18)]">
+      <div className="mb-5">
+        <h3 className="font-semibold">{title}</h3>
+        <p className="mt-1 text-sm text-gray-500">{subtitle}</p>
+      </div>
+      {data.length ? (
+        <div className="h-[320px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data} margin={{ top: 10, right: 12, left: 0, bottom: 5 }}>
+              <CartesianGrid stroke="#202635" strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="month" stroke="#6b7280" tickLine={false} axisLine={false} fontSize={11} />
+              <YAxis stroke="#6b7280" tickLine={false} axisLine={false} fontSize={11} tickFormatter={(value) => compactNumber(Number(value))} />
+              <Tooltip
+                contentStyle={{ background: "#111827", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10 }}
+                formatter={(value) => [formatNumber(Number(value)), valueLabel]}
+              />
+              <Line type="monotone" dataKey="value" name={valueLabel} stroke="#818cf8" strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <EmptyChart />
+      )}
+    </div>
+  );
+}
+
+
+function isEmptyAnalyticsValue(value: unknown): boolean {
+  if (value === null || value === undefined || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value !== "object") return false;
+
+  const obj = value as Record<string, unknown>;
+  if (
+    obj.type === "dataframe" &&
+    typeof obj.rows === "number" &&
+    obj.rows === 0
+  ) return true;
+
+  if (Array.isArray(obj.data) && obj.data.length === 0) return true;
+  return false;
+}
+
+function CompactAnalyticsResult({
+  label,
+  value,
+}: {
+  label: string;
+  value: unknown;
+}) {
+  if (isEmptyAnalyticsValue(value)) return null;
+
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return (
+      <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.02] px-4 py-3">
+        <span className="text-xs uppercase tracking-wide text-indigo-300">
+          {label.replaceAll("_", " ")}
+        </span>
+        <span className="text-sm text-gray-200">{String(value)}</span>
+      </div>
+    );
+  }
+
+  if (typeof value === "object" && value !== null) {
+    const obj = value as Record<string, unknown>;
+    const rows = typeof obj.rows === "number" ? obj.rows : undefined;
+    const columnsCount =
+      typeof obj.columns_count === "number"
+        ? obj.columns_count
+        : Array.isArray(obj.columns)
+          ? obj.columns.length
+          : undefined;
+    const data = Array.isArray(obj.data) ? obj.data : [];
+
+    if (obj.type === "dataframe") {
+      return (
+        <div className="rounded-lg border border-white/10 bg-white/[0.02] p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-indigo-300">
+              {label.replaceAll("_", " ")}
+            </p>
+            <div className="flex gap-2 text-xs text-gray-500">
+              {rows !== undefined && <span>{rows} rows</span>}
+              {columnsCount !== undefined && <span>· {columnsCount} columns</span>}
+            </div>
+          </div>
+          {data.length > 0 ? (
+            <p className="mt-3 text-sm text-gray-400">
+              Structured analytics result available ({data.length} returned records).
+            </p>
+          ) : (
+            <p className="mt-3 text-sm text-gray-500">
+              No matching records were returned for this analysis.
+            </p>
+          )}
+        </div>
+      );
+    }
+  }
+
+  return (
+    <details className="rounded-lg border border-white/10 bg-white/[0.02] p-4">
+      <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-indigo-300">
+        {label.replaceAll("_", " ")} · Technical details
+      </summary>
+      <div className="mt-3 max-h-72 overflow-auto rounded-lg bg-black/20 p-3">
+        <pre className="whitespace-pre-wrap break-words text-xs leading-5 text-gray-400">
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      </div>
+    </details>
+  );
+}
+
+function truthyFlag(value: unknown): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["true", "yes", "y", "1", "fraud", "fraudulent", "chargeback"].includes(normalized);
+}
+
+function GenericModuleDashboard({
+  analysis,
+  selectedModule,
+}: {
+  analysis: AnalysisResponse;
+  selectedModule: string;
+}) {
+  const frame = getDataFrame(analysis);
+  const data = frame?.data ?? [];
+  const map = getColumnMap(analysis);
+  const dataHealth = Math.max(
+    0,
+    100 - analysis.profile.missing_percentage,
+  );
+
+  const numericColumns =
+    analysis.profile.numeric_columns ?? [];
+
+  const previewColumns =
+    frame?.columns?.length
+      ? frame.columns.slice(0, 8)
+      : analysis.columns.slice(0, 8);
+
+  const previewRows = data.slice(0, 8);
+
+  const engineResults =
+    analysis.analytics?.results ?? {};
+
+  const resultEntries = Object.entries(
+    engineResults,
+  ).filter(
+    ([key, value]) =>
+      !key.startsWith("prepare_") &&
+      !key.startsWith("detect_") &&
+      !isEmptyAnalyticsValue(value),
+  );
+
+  const mappedFields = Object.entries(map).filter(
+    ([, value]) =>
+      value !== null &&
+      value !== undefined &&
+      value !== "",
+  );
+
+  const visualConfig =
+    MODULE_VISUALS[moduleVisualKey(selectedModule)] ?? {
+      primaryAliases: [],
+      categoryAliases: [],
+      secondaryCategoryAliases: [],
+      dateAliases: ["date"],
+      metricLabel: "Value",
+      barTitle: `${selectedModule} Performance`,
+      pieTitle: `${selectedModule} Distribution`,
+      trendTitle: `${selectedModule} Trend`,
+    };
+
+  const allColumns = frame?.columns?.length ? frame.columns : analysis.columns;
+  const categoricalColumns = analysis.profile.categorical_columns ?? [];
+  const dateColumns = analysis.profile.datetime_columns ?? [];
+
+  const metricColumn = chooseNumericColumn(
+    numericColumns,
+    visualConfig.primaryAliases,
+  );
+
+  const categoryColumn = chooseCategoryColumn(
+    categoricalColumns,
+    visualConfig.categoryAliases,
+  );
+
+  const secondaryCategoryColumn = chooseCategoryColumn(
+    categoricalColumns,
+    visualConfig.secondaryCategoryAliases,
+    categoryColumn ? [categoryColumn] : [],
+  ) ?? categoryColumn;
+
+  const dateColumn =
+    chooseColumn(dateColumns, visualConfig.dateAliases) ??
+    chooseColumn(allColumns, visualConfig.dateAliases);
+
+  const barData =
+    categoryColumn && metricColumn
+      ? aggregateBy(data, categoryColumn, metricColumn)
+      : aggregateCount(data, categoryColumn);
+
+  const pieData = aggregateCount(data, secondaryCategoryColumn);
+
+  const trendData =
+    dateColumn && metricColumn
+      ? aggregateMonthly(data, dateColumn, metricColumn)
+      : [];
+
+  const primaryMetricTotal = metricColumn
+    ? data.reduce((sum, row) => sum + numberValue(row[metricColumn]), 0)
+    : undefined;
+
+  const uniqueCategoryCount = categoryColumn
+    ? new Set(
+        data
+          .map((row) => row[categoryColumn])
+          .filter((value) => value !== null && value !== undefined && value !== "")
+          .map(String),
+      ).size
+    : undefined;
+
+  const moduleKey = moduleVisualKey(selectedModule);
+  const fraudColumn = chooseColumn(allColumns, ["fraud", "is_fraud", "fraud_flag"]);
+  const chargebackColumn = chooseColumn(allColumns, ["chargeback", "is_chargeback", "chargeback_flag"]);
+  const riskColumn = chooseColumn(allColumns, ["risk_score", "risk", "fraud_score"]);
+  const amountColumn = chooseColumn(allColumns, ["amount", "transaction_amount", "value", "fraud_amount"]);
+
+  const fraudRows = fraudColumn
+    ? data.filter((row) => truthyFlag(row[fraudColumn]))
+    : [];
+  const fraudCount = fraudRows.length;
+  const fraudRate = data.length ? (fraudCount / data.length) * 100 : 0;
+  const fraudAmount = amountColumn
+    ? fraudRows.reduce((sum, row) => sum + numberValue(row[amountColumn]), 0)
+    : 0;
+  const chargebackCount = chargebackColumn
+    ? data.filter((row) => truthyFlag(row[chargebackColumn])).length
+    : 0;
+  const riskValues = riskColumn
+    ? data.map((row) => numberValue(row[riskColumn])).filter((value) => Number.isFinite(value))
+    : [];
+  const avgRiskScore = riskValues.length
+    ? riskValues.reduce((sum, value) => sum + value, 0) / riskValues.length
+    : 0;
+
+  return (
+    <>
+      <section className="mb-6 overflow-hidden rounded-2xl border border-white/[0.08] bg-gradient-to-r from-indigo-500/[0.10] via-[#101722] to-cyan-500/[0.05] p-5 shadow-[0_18px_55px_rgba(0,0,0,0.20)]">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-300">
+              Analytics workspace
+            </p>
+            <h2 className="mt-1 text-xl font-semibold tracking-tight">
+              {selectedModule}
+            </h2>
+          </div>
+
+          <span className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.08] px-3 py-1.5 text-xs font-medium text-emerald-300">
+            Analysis complete
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/[0.06] bg-black/10 p-4">
+          <div>
+            <p className="font-medium">{analysis.filename}</p>
+            <p className="mt-1 text-xs text-gray-500">
+              {analysis.shape.rows} rows · {analysis.shape.columns} columns
+              {analysis.sheet ? ` · ${analysis.sheet}` : ""}
+            </p>
+          </div>
+
+          <div className="text-right">
+            <p className="text-xs text-slate-500">Engine</p>
+            <p className="mt-1 text-xs font-medium text-slate-300">
+              {analysis.analytics?.engine ?? "NEXUS Analytics"}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <GenericKpiCard
+          title={metricColumn ? visualConfig.metricLabel : "Rows"}
+          value={metricColumn ? formatNumber(primaryMetricTotal) : formatNumber(analysis.shape.rows)}
+          subtitle={metricColumn ? `Total of ${metricColumn}` : "Records analyzed"}
+          icon={Wallet}
+        />
+
+        <GenericKpiCard
+          title={categoryColumn ? `Unique ${categoryColumn}` : "Columns"}
+          value={categoryColumn ? formatNumber(uniqueCategoryCount) : formatNumber(analysis.shape.columns)}
+          subtitle={categoryColumn ? "Distinct groups detected" : `${numericColumns.length} numeric fields`}
+          icon={Database}
+        />
+
+        <GenericKpiCard
+          title="Data Health"
+          value={`${dataHealth.toFixed(1)}%`}
+          subtitle={`${analysis.profile.missing_percentage.toFixed(1)}% missing · ${analysis.profile.duplicate_rows.toLocaleString()} duplicates`}
+          icon={Activity}
+        />
+
+        <GenericKpiCard
+          title="Functions Executed"
+          value={formatNumber(analysis.analytics?.functions_executed ?? 0)}
+          subtitle={analysis.analytics?.engine ?? "Analytics engine"}
+          icon={BarChart3}
+        />
+      </section>
+
+      {moduleKey === "fraud" && (
+        <section className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <GenericKpiCard title="Fraud Count" value={formatNumber(fraudCount)} subtitle={fraudColumn ? `Using ${fraudColumn}` : "Fraud flag not detected"} icon={ShieldAlert} />
+          <GenericKpiCard title="Fraud Rate" value={`${fraudRate.toFixed(1)}%`} subtitle={`${fraudCount} of ${data.length} transactions`} icon={Activity} />
+          <GenericKpiCard title="Fraud Amount" value={formatNumber(fraudAmount)} subtitle={amountColumn ? `From ${amountColumn}` : "Amount not detected"} icon={Wallet} />
+          <GenericKpiCard title="Avg. Risk Score" value={riskColumn ? avgRiskScore.toFixed(1) : "—"} subtitle={riskColumn ?? "Risk score not detected"} icon={Gauge} />
+          <GenericKpiCard title="Chargebacks" value={chargebackColumn ? formatNumber(chargebackCount) : "—"} subtitle={chargebackColumn ?? "Chargeback flag not detected"} icon={AlertTriangle} />
+        </section>
+      )}
+
+      <section className="mt-5 grid gap-5 xl:grid-cols-2">
+        <GenericBarChart
+          title={visualConfig.barTitle}
+          subtitle={
+            categoryColumn
+              ? `${visualConfig.metricLabel} grouped by ${categoryColumn}`
+              : "A categorical field is required for this visualization"
+          }
+          data={barData}
+          valueLabel={metricColumn ?? "Records"}
+        />
+
+        <GenericPieChart
+          title={visualConfig.pieTitle}
+          subtitle={
+            secondaryCategoryColumn
+              ? `Record distribution by ${secondaryCategoryColumn}`
+              : "A categorical field is required for this visualization"
+          }
+          data={pieData}
+        />
+      </section>
+
+      <section className="mt-5">
+        <GenericTrendChart
+          title={visualConfig.trendTitle}
+          subtitle={
+            dateColumn && metricColumn
+              ? `${metricColumn} aggregated over ${dateColumn}`
+              : "A date field and numeric metric are required for trend analysis"
+          }
+          data={trendData}
+          valueLabel={metricColumn ?? visualConfig.metricLabel}
+        />
+      </section>
+
+      <section className="mt-5 grid gap-5 xl:grid-cols-2">
+        <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-6">
+          <h3 className="font-semibold">
+            {selectedModule} Intelligence
+          </h3>
+
+          <p className="mt-1 text-sm text-gray-500">
+            Results returned by the selected
+            NEXUS analytics engine
+          </p>
+
+          {resultEntries.length ? (
+            <div className="mt-5 space-y-3">
+              {resultEntries
+                .slice(0, 12)
+                .map(([key, value]) => (
+                  <CompactAnalyticsResult
+                    key={key}
+                    label={key}
+                    value={value}
+                  />
+                ))}
+            </div>
+          ) : (
+            <p className="mt-5 text-sm text-gray-500">
+              The engine completed successfully,
+              but did not return additional
+              module-specific result blocks.
+            </p>
+          )}
+        </div>
+
+        <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-6">
+          <h3 className="font-semibold">
+            Detected Fields
+          </h3>
+
+          <p className="mt-1 text-sm text-gray-500">
+            Column roles detected for this
+            analytics module
+          </p>
+
+          <div className="mt-5 space-y-3">
+            {mappedFields.length ? (
+              mappedFields
+                .slice(0, 16)
+                .map(([key, value]) => (
+                  <div
+                    key={key}
+                    className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.02] px-4 py-3"
+                  >
+                    <span className="text-xs uppercase tracking-wide text-gray-500">
+                      {key.replaceAll("_", " ")}
+                    </span>
+
+                    <span className="break-all text-right text-sm text-gray-200">
+                      {String(value)}
+                    </span>
+                  </div>
+                ))
+            ) : (
+              <p className="text-sm text-gray-500">
+                No explicit column mapping was
+                returned. Dataset structure is
+                shown below.
+              </p>
+            )}
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 gap-3">
+            <InfoBox
+              label="Missing Cells"
+              value={formatNumber(
+                analysis.profile.missing_cells,
+              )}
+            />
+
+            <InfoBox
+              label="Duplicate Rows"
+              value={formatNumber(
+                analysis.profile.duplicate_rows,
+              )}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-5 rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-6">
+        <div className="mb-5">
+          <h3 className="font-semibold">
+            Dataset Preview
+          </h3>
+
+          <p className="mt-1 text-sm text-gray-500">
+            Prepared data returned by the
+            {` ${selectedModule}`} engine
+          </p>
+        </div>
+
+        {previewRows.length &&
+        previewColumns.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[700px] text-left text-sm">
+              <thead className="border-b border-white/10 text-xs uppercase text-gray-500">
+                <tr>
+                  {previewColumns.map(
+                    (column) => (
+                      <th
+                        key={column}
+                        className="px-3 py-3"
+                      >
+                        {column}
+                      </th>
+                    ),
+                  )}
+                </tr>
+              </thead>
+
+              <tbody>
+                {previewRows.map(
+                  (row, rowIndex) => (
+                    <tr
+                      key={rowIndex}
+                      className="border-b border-white/5"
+                    >
+                      {previewColumns.map(
+                        (column) => (
+                          <td
+                            key={column}
+                            className="max-w-[240px] truncate px-3 py-3 text-gray-300"
+                          >
+                            {String(
+                              row[column] ??
+                                "—",
+                            )}
+                          </td>
+                        ),
+                      )}
+                    </tr>
+                  ),
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">
+            No dataframe preview was returned by
+            this module. The analytics results
+            above are still available.
+          </p>
+        )}
+      </section>
+
+      <section className="mt-5 rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-6">
+        <div className="mb-5 flex items-center gap-3">
+          <Table2
+            size={19}
+            className="text-indigo-400"
+          />
+
+          <div>
+            <h3 className="font-semibold">
+              Dataset Structure
+            </h3>
+
+            <p className="text-xs text-gray-500">
+              Columns detected by NEXUS
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {analysis.columns.map((column) => (
+            <span
+              key={column}
+              className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-gray-400"
+            >
+              {column}
+            </span>
+          ))}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function GenericKpiCard({
+  title,
+  value,
+  subtitle,
+  icon: Icon,
+}: {
+  title: string;
+  value: string;
+  subtitle: string;
+  icon: typeof Wallet;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-5">
+      <div className="mb-5 flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+        <Icon size={18} />
+      </div>
+
+      <p className="text-sm text-gray-500">
+        {title}
+      </p>
+
+      <p className="mt-1 text-2xl font-semibold">
+        {value}
+      </p>
+
+      <p className="mt-2 text-xs text-gray-600">
+        {subtitle}
+      </p>
+    </div>
+  );
+}
+
+function ComparisonDashboard({
+  rows,
+  analyses,
+  selectedModule,
+  commonColumns,
+  crossFileResult,
+  crossFileLoading,
+  crossFileError,
+}: {
+  rows: ComparisonRow[];
+  analyses: AnalysisResponse[];
+  selectedModule: string;
+  commonColumns: string[];
+  crossFileResult: unknown;
+  crossFileLoading: boolean;
+  crossFileError: string;
+}) {
+  const moduleKey = moduleVisualKey(selectedModule);
+  const visualConfig = MODULE_VISUALS[moduleKey] ?? {
+    primaryAliases: ["revenue", "sales", "amount", "profit", "quantity", "units"],
+    categoryAliases: ["category", "product", "region", "segment", "type"],
+    secondaryCategoryAliases: ["region", "category", "status", "channel"],
+    dateAliases: ["date", "order_date", "transaction_date", "created_at"],
+    metricLabel: moduleKey === "sales" ? "Revenue" : "Primary metric",
+    barTitle: `${selectedModule} Comparison`,
+    pieTitle: `${selectedModule} Distribution`,
+    trendTitle: `${selectedModule} Trend`,
+  };
+
+  const metricComparison = analyses.map((analysis) => {
+    const frame = getDataFrame(analysis);
+    const numericColumns = analysis.profile.numeric_columns ?? [];
+    const metricColumn = chooseNumericColumn(numericColumns, visualConfig.primaryAliases);
+    const value = metricColumn
+      ? (frame?.data ?? []).reduce((sum, row) => sum + numberValue(row[metricColumn]), 0)
+      : analysis.shape.rows;
+    return {
+      name: shortFilename(analysis.filename),
+      value,
+      metric: metricColumn ?? "Rows",
+    };
+  });
+
+  const rowComparison = rows.map((row) => ({
+    name: shortFilename(row.filename),
+    value: row.rows,
+  }));
+
+  const healthComparison = rows
+    .filter((row) => row.dataHealth !== undefined)
+    .map((row) => ({
+      name: shortFilename(row.filename),
+      value: row.dataHealth ?? 0,
+    }));
+
+  const combinedCategoryData = (() => {
+    const totals: Record<string, number> = {};
+    analyses.forEach((analysis) => {
+      const frame = getDataFrame(analysis);
+      const categorical = analysis.profile.categorical_columns ?? [];
+      const category = chooseCategoryColumn(categorical, visualConfig.categoryAliases);
+      if (!category) return;
+      aggregateCount(frame?.data ?? [], category).forEach((item) => {
+        totals[item.name] = (totals[item.name] ?? 0) + item.value;
+      });
+    });
+    return Object.entries(totals)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  })();
+
+  const metricName = metricComparison.find((item) => item.metric !== "Rows")?.metric ?? "Rows";
+
+  return (
+    <>
+      <section className="mb-5 rounded-xl border border-indigo-500/20 bg-indigo-500/[0.04] p-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-400">
+            <GitCompareArrows size={20} />
+          </div>
+          <div>
+            <h3 className="font-semibold">{selectedModule} Cross-File Comparison</h3>
+            <p className="text-sm text-gray-500">
+              Visual comparison of {rows.length} analyzed datasets using real uploaded data
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <GenericKpiCard title="Datasets" value={formatNumber(rows.length)} subtitle="Analyzed files" icon={Database} />
+        <GenericKpiCard title="Total Rows" value={formatNumber(rows.reduce((sum, row) => sum + row.rows, 0))} subtitle="Records compared" icon={Table2} />
+        <GenericKpiCard title="Common Fields" value={formatNumber(commonColumns.length)} subtitle="Shared columns" icon={GitCompareArrows} />
+        <GenericKpiCard title="Avg. Data Health" value={`${(rows.reduce((sum, row) => sum + (row.dataHealth ?? 0), 0) / Math.max(rows.length, 1)).toFixed(1)}%`} subtitle="Across datasets" icon={Activity} />
+      </section>
+
+      <section className="mt-5 grid gap-5 xl:grid-cols-2">
+        <GenericBarChart
+          title={`${visualConfig.metricLabel} by Dataset`}
+          subtitle={`${metricName} aggregated independently for each uploaded file`}
+          data={metricComparison}
+          valueLabel={metricName}
+        />
+        <GenericPieChart
+          title={visualConfig.pieTitle}
+          subtitle="Combined categorical distribution across uploaded datasets"
+          data={combinedCategoryData.length ? combinedCategoryData : rowComparison}
+        />
+      </section>
+
+      <section className="mt-5 grid gap-5 xl:grid-cols-2">
+        <GenericBarChart
+          title="Record Volume by Dataset"
+          subtitle="Number of analyzed records in each uploaded file"
+          data={rowComparison}
+          valueLabel="Rows"
+        />
+        <GenericBarChart
+          title="Data Health by Dataset"
+          subtitle="Completeness score for each analyzed file"
+          data={healthComparison}
+          valueLabel="Data health %"
+        />
+      </section>
+
+      <section className="mt-5 overflow-hidden rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)]">
+        <div className="border-b border-white/10 p-5">
+          <h3 className="font-semibold">Dataset Comparison</h3>
+          <p className="mt-1 text-sm text-gray-500">Module-aware metrics across uploaded files</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-left text-sm">
+            <thead className="border-b border-white/10 bg-white/[0.02] text-xs uppercase text-gray-500">
+              <tr>
+                <th className="px-5 py-4">Dataset</th>
+                <th className="px-5 py-4">Rows</th>
+                <th className="px-5 py-4">Columns</th>
+                <th className="px-5 py-4">{visualConfig.metricLabel}</th>
+                <th className="px-5 py-4">Health</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={row.id} className="border-b border-white/5 last:border-0">
+                  <td className="px-5 py-4 font-medium text-gray-200">{row.filename}</td>
+                  <td className="px-5 py-4 text-gray-400">{formatNumber(row.rows)}</td>
+                  <td className="px-5 py-4 text-gray-400">{formatNumber(row.columns)}</td>
+                  <td className="px-5 py-4 text-gray-300">{formatNumber(metricComparison[index]?.value)}</td>
+                  <td className="px-5 py-4 text-gray-300">{row.dataHealth !== undefined ? `${row.dataHealth.toFixed(1)}%` : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="mt-5 grid gap-5 xl:grid-cols-2">
+        <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] p-6 shadow-[0_14px_40px_rgba(0,0,0,0.18)]">
+          <h3 className="font-semibold">Common Columns</h3>
+          <p className="mt-1 text-sm text-gray-500">Fields shared across all analyzed datasets</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            {commonColumns.length ? commonColumns.map((column) => (
+              <span key={column} className="rounded-md border border-indigo-500/20 bg-indigo-500/10 px-3 py-1.5 text-xs text-indigo-300">{column}</span>
+            )) : <p className="text-sm text-gray-500">No common columns detected.</p>}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] p-6 shadow-[0_14px_40px_rgba(0,0,0,0.18)]">
+          <h3 className="font-semibold">Cross-File Intelligence</h3>
+          <p className="mt-1 text-sm text-gray-500">Relationship analysis from the NEXUS backend</p>
+          {crossFileLoading ? (
+            <div className="mt-5 flex items-center gap-2 text-sm text-indigo-300"><Loader2 size={17} className="animate-spin" />Analyzing relationships...</div>
+          ) : crossFileError ? (
+            <div className="mt-5 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">{crossFileError}</div>
+          ) : crossFileResult ? (
+            <CrossFileResult value={crossFileResult} />
+          ) : (
+            <p className="mt-5 text-sm text-gray-500">Cross-file results will appear here.</p>
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+/* =========================================================
+   GENERIC CROSS FILE RESPONSE
+========================================================= */
+
+function CrossFileResult({
+  value,
+}: {
+  value: unknown;
+}) {
+  if (value === null || value === undefined) return null;
+
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return <p className="mt-3 text-sm text-gray-300">{String(value)}</p>;
+  }
+
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const datasets = Array.isArray(obj.datasets) ? obj.datasets : [];
+    const relationships = Array.isArray(obj.relationships) ? obj.relationships : [];
+
+    return (
+      <div className="mt-5 space-y-4">
+        {datasets.length > 0 && (
+          <div className="grid gap-3 md:grid-cols-2">
+            {datasets.slice(0, 8).map((item, index) => {
+              const dataset =
+                typeof item === "object" && item !== null
+                  ? (item as Record<string, unknown>)
+                  : {};
+              return (
+                <div key={index} className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+                  <p className="truncate text-sm font-medium text-gray-200">
+                    {String(dataset.filename ?? `Dataset ${index + 1}`)}
+                  </p>
+                  <p className="mt-2 text-xs text-gray-500">
+                    {String(dataset.rows ?? "—")} rows · {String(dataset.columns ?? "—")} columns
+                    {dataset.sheet ? ` · ${String(dataset.sheet)}` : ""}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {relationships.length > 0 && (
+          <div className="rounded-xl border border-indigo-400/15 bg-indigo-500/[0.04] p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-indigo-300">
+              Relationships detected
+            </p>
+            <p className="mt-2 text-sm text-gray-400">
+              {relationships.length} cross-file relationship{relationships.length === 1 ? "" : "s"} returned by NEXUS.
+            </p>
+          </div>
+        )}
+
+        <details className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <summary className="cursor-pointer text-sm font-medium text-gray-300">
+            Technical details
+          </summary>
+          <div className="mt-3 max-h-80 overflow-auto rounded-lg bg-black/20 p-3">
+            <pre className="whitespace-pre-wrap break-words text-xs leading-5 text-gray-500">
+              {JSON.stringify(value, null, 2)}
+            </pre>
+          </div>
+        </details>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+/* =========================================================
+   CHART COMPONENTS
+========================================================= */
+
+function ChartCard({
+  title,
+  subtitle,
+  data,
+}: {
+  title: string;
+  subtitle: string;
+  data: {
+    name: string;
+    value: number;
+  }[];
+}) {
+  return (
+    <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-6">
+      <div className="mb-6">
+        <h3 className="font-semibold">
+          {title}
+        </h3>
+
+        <p className="mt-1 text-sm text-gray-500">
+          {subtitle}
+        </p>
+      </div>
+
+      {data.length ? (
+        <div className="h-[300px]">
+          <ResponsiveContainer
+            width="100%"
+            height="100%"
+          >
+            <BarChart data={data}>
+              <CartesianGrid
+                stroke="#202635"
+                strokeDasharray="3 3"
+                vertical={false}
+              />
+
+              <XAxis
+                dataKey="name"
+                stroke="#6b7280"
+                tickLine={false}
+                axisLine={false}
+                fontSize={11}
+              />
+
+              <YAxis
+                stroke="#6b7280"
+                tickLine={false}
+                axisLine={false}
+                fontSize={11}
+                tickFormatter={(value) =>
+                  compactNumber(
+                    Number(value),
+                  )
+                }
+              />
+
+              <Tooltip
+                contentStyle={{
+                  background: "#111827",
+                  border:
+                    "1px solid rgba(255,255,255,.1)",
+                  borderRadius: 10,
+                }}
+                formatter={(value) =>
+                  formatCurrency(
+                    Number(value),
+                  )
+                }
+              />
+
+              <Bar
+                dataKey="value"
+                fill="#6366f1"
+                radius={[
+                  5,
+                  5,
+                  0,
+                  0,
+                ]}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <EmptyChart />
+      )}
+    </div>
+  );
+}
+
+function ComparisonChart({
+  title,
+  subtitle,
+  data,
+  currency = false,
+}: {
+  title: string;
+  subtitle: string;
+  data: {
+    name: string;
+    value?: number;
+  }[];
+  currency?: boolean;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)] p-6">
+      <div className="mb-6">
+        <h3 className="font-semibold">
+          {title}
+        </h3>
+
+        <p className="mt-1 text-sm text-gray-500">
+          {subtitle}
+        </p>
+      </div>
+
+      {data.length ? (
+        <div className="h-[300px]">
+          <ResponsiveContainer
+            width="100%"
+            height="100%"
+          >
+            <BarChart data={data}>
+              <CartesianGrid
+                stroke="#202635"
+                strokeDasharray="3 3"
+                vertical={false}
+              />
+
+              <XAxis
+                dataKey="name"
+                stroke="#6b7280"
+                tickLine={false}
+                axisLine={false}
+              />
+
+              <YAxis
+                stroke="#6b7280"
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(value) =>
+                  compactNumber(
+                    Number(value),
+                  )
+                }
+              />
+
+              <Tooltip
+                contentStyle={{
+                  background: "#111827",
+                  border:
+                    "1px solid rgba(255,255,255,.1)",
+                  borderRadius: 10,
+                }}
+                formatter={(value) =>
+                  currency
+                    ? formatCurrency(
+                        Number(value),
+                      )
+                    : formatNumber(
+                        Number(value),
+                      )
+                }
+              />
+
+              <Legend />
+
+              <Bar
+                dataKey="value"
+                name={title}
+                fill="#6366f1"
+                radius={[
+                  5,
+                  5,
+                  0,
+                  0,
+                ]}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <EmptyChart />
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   SMALL COMPONENTS
+========================================================= */
+
+function EmptyChart() {
+  return (
+    <div className="flex h-[300px] items-center justify-center rounded-xl border border-dashed border-white/10">
+      <div className="text-center">
+        <BarChart3
+          className="mx-auto text-gray-700"
+          size={30}
+        />
+
+        <p className="mt-3 text-sm text-gray-500">
+          No visualization available
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function LoadingPanel({
+  text,
+}: {
+  text: string;
+}) {
+  return (
+    <div className="flex min-h-[300px] items-center justify-center rounded-2xl border border-white/[0.07] bg-gradient-to-b from-[#101722] to-[#0c121c] shadow-[0_14px_40px_rgba(0,0,0,0.18)]">
+      <div className="text-center">
+        <Loader2
+          size={28}
+          className="mx-auto animate-spin text-indigo-400"
+        />
+
+        <p className="mt-3 text-sm text-gray-400">
+          {text}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function InfoBox({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.02] p-4">
+      <p className="text-xs text-gray-600">
+        {label}
+      </p>
+
+      <p className="mt-1 break-all text-sm font-medium text-gray-200">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function compactNumber(
+  value: number,
+) {
+  if (Math.abs(value) >= 1_000_000_000) {
+    return `${(
+      value / 1_000_000_000
+    ).toFixed(1)}B`;
+  }
+
+  if (Math.abs(value) >= 1_000_000) {
+    return `${(
+      value / 1_000_000
+    ).toFixed(1)}M`;
+  }
+
+  if (Math.abs(value) >= 1_000) {
+    return `${(
+      value / 1_000
+    ).toFixed(0)}K`;
+  }
+
+  return String(
+    Math.round(value),
+  );
+}
+
+function shortFilename(
+  filename: string,
+) {
+  const withoutExtension =
+    filename.replace(
+      /\.[^/.]+$/,
+      "",
+    );
+
+  if (
+    withoutExtension.length <= 18
+  ) {
+    return withoutExtension;
+  }
+
+  return `${withoutExtension.slice(
+    0,
+    15,
+  )}...`;
+}

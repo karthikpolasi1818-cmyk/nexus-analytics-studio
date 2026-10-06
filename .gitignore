@@ -1,0 +1,55 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# NEXUS generated files
+generated_reports/
+_nexus_backups/
+
+# Temporary files
+*.log
+*.tmp
+# Development / migration artifacts
+nexus-analytics-studio-website.zip
+patch_*.py
+sales_api_response.json
+
+# Local API snapshots
+openapi-live.json
+
+# Temporary standalone versions
+nexus_analytics_studio_fully_updated.py
+nexus_analytics_studio_fully_updated_v2.py
+
+/package-lock.json
+
+/nalytics/
+
+# Backup source files
+*_backup.py
+*.backup*
+
+frontend/AGENTS.md
+frontend/CLAUDE.md
