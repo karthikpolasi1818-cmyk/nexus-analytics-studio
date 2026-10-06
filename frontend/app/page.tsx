@@ -1655,6 +1655,12 @@ export default function Home() {
       return;
     }
 
+    // v1.3: send a bounded history from before the current question is appended.
+    // The current question is sent separately, so it is not duplicated.
+    const conversation = aiMessages
+      .slice(-8)
+      .map(({ role, content }) => ({ role, content }));
+
     setAiMessages((current) => [
       ...current,
       { role: "user", content: question },
@@ -1673,6 +1679,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
+          conversation,
           dataset: {
             ...analysis,
             module: analysis.module || selectedModule,

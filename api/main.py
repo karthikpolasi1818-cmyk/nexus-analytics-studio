@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 
 
@@ -2420,6 +2420,7 @@ class AdvancedAIRequest(BaseModel):
     question: str
 
     dataset: Optional[dict] = None
+    conversation: Optional[list] = None
 
 
 
@@ -2429,7 +2430,7 @@ class AdvancedAIRequest(BaseModel):
 
 async def advanced_ai_ask(payload: AdvancedAIRequest):
 
-    return analyze_question(payload.question, payload.dataset or {})
+    return analyze_question(payload.question, payload.dataset or {}, payload.conversation or [])
 
 
 
@@ -2438,3 +2439,5 @@ async def advanced_ai_ask(payload: AdvancedAIRequest):
 async def executive_intelligence(payload: dict):
 
     return build_executive_intelligence(payload or {})
+
+

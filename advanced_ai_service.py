@@ -2,7 +2,7 @@
 
 NEXUS Analytics Studio
 
-Advanced AI Analyst v1.2
+Advanced AI Analyst v1.3
 
 
 
@@ -1620,11 +1620,188 @@ def _legacy_ranking(dashboard: Dict[str, Any], question: str) -> Optional[str]:
 
 
 
+
+
+def _conversation_messages(conversation: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+    """Normalize and bound client-provided conversation history."""
+    clean: List[Dict[str, str]] = []
+    for item in (conversation or [])[-8:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        content = str(item.get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            clean.append({"role": role, "content": content[:4000]})
+    return clean
+
+
+def _conversation_state(
+    conversation: Optional[List[Dict[str, Any]]],
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Recover recent metric, dimension and categorical values deterministically."""
+    messages = _conversation_messages(conversation)
+    state: Dict[str, Any] = {"metric": None, "dimension": None, "values": []}
+    dimensions: List[str] = []
+    for name in list((context.get("group_performance") or {}).keys()) + list((context.get("categorical_statistics") or {}).keys()):
+        if name not in dimensions:
+            dimensions.append(name)
+
+    # Walk newest to oldest so the closest conversational reference wins.
+    for item in reversed(messages):
+        content = item["content"]
+        if state["metric"] is None:
+            metric = _explicit_metric(content)
+            if metric:
+                state["metric"] = metric
+        if state["dimension"] is None:
+            q = _norm(content)
+            for dimension in dimensions:
+                if _norm(dimension) and _norm(dimension) in q:
+                    state["dimension"] = dimension
+                    break
+        for dimension in dimensions:
+            found = _values_mentioned(content, _category_candidates(context, dimension))
+            if found:
+                if state["dimension"] is None:
+                    state["dimension"] = dimension
+                for value in found:
+                    if value not in state["values"]:
+                        state["values"].append(value)
+        if state["metric"] and state["dimension"] and state["values"]:
+            break
+    return state
+
+
+def _resolve_conversation_question(
+    question: str,
+    conversation: Optional[List[Dict[str, Any]]],
+    context: Dict[str, Any],
+) -> Tuple[str, Dict[str, Any]]:
+    """Expand short follow-ups into standalone questions for the v1.2 engine."""
+    messages = _conversation_messages(conversation)
+    if not messages or not isinstance(context, dict):
+        return question, {"used": False}
+
+    q = _norm(question)
+    state = _conversation_state(messages, context)
+    current_metric = _explicit_metric(question)
+
+    current_dimension: Optional[str] = None
+    current_values: List[str] = []
+    dimensions: List[str] = []
+    for name in list((context.get("group_performance") or {}).keys()) + list((context.get("categorical_statistics") or {}).keys()):
+        if name not in dimensions:
+            dimensions.append(name)
+    for dimension in dimensions:
+        values = _values_mentioned(question, _category_candidates(context, dimension))
+        if values:
+            current_dimension = dimension
+            current_values = values
+            break
+
+    is_compare = any(token in q for token in ["compare", "comparison", "versus", " vs ", "difference between"])
+    is_short_followup = (
+        len(q.split()) <= 8
+        or q.startswith("what about")
+        or q.startswith("how about")
+        or q.startswith("and ")
+        or any(token in f" {q} " for token in [" it ", " that ", " them ", " those ", " one "])
+    )
+    if not is_short_followup and not is_compare:
+        return question, {"used": False}
+
+    metric = current_metric or state.get("metric")
+    dimension = current_dimension or state.get("dimension")
+    prior_values = list(state.get("values") or [])
+
+    if is_compare:
+        values: List[str] = []
+        # Pronouns such as "it" refer to the most recent prior entity.
+        if any(token in f" {q} " for token in [" it ", " that ", " one "]) and prior_values:
+            values.append(prior_values[0])
+        for value in current_values:
+            if value not in values:
+                values.append(value)
+        for value in prior_values:
+            if value not in values:
+                values.append(value)
+        if dimension and len(values) >= 2:
+            resolved = f"Compare {values[0]} vs {values[1]}"
+            if metric:
+                resolved += f" on {metric.replace('_', ' ')}"
+            resolved += f" by {dimension}"
+            return resolved, {"used": True, "metric": metric, "dimension": dimension, "values": values[:2]}
+
+    # "What about Google?" keeps the previous metric. "What about ROAS?"
+    # keeps the most recent entity/dimension while changing the metric.
+    value = current_values[0] if current_values else (prior_values[0] if current_metric and prior_values else None)
+    if value and dimension and metric:
+        resolved = f"What is {metric.replace('_', ' ')} for {value} by {dimension}?"
+        return resolved, {"used": True, "metric": metric, "dimension": dimension, "values": [value]}
+
+    return question, {"used": False}
+
+
+def _answer_group_value(
+    question: str,
+    context: Dict[str, Any],
+) -> Optional[Tuple[str, List[Dict[str, Any]], Optional[str]]]:
+    """Answer a metric for one explicitly named categorical value."""
+    metric = _explicit_metric(question)
+    if not metric:
+        return None
+
+    dimensions: List[str] = []
+    for name in list((context.get("group_performance") or {}).keys()) + list((context.get("categorical_statistics") or {}).keys()):
+        if name not in dimensions:
+            dimensions.append(name)
+
+    for dimension in dimensions:
+        values = _values_mentioned(question, _category_candidates(context, dimension))
+        if len(values) != 1:
+            continue
+        label = values[0]
+        if _derived_group_rows(context, dimension, metric):
+            source = "derived"
+            resolved_metric = metric
+        else:
+            numeric_name = _numeric_metric_name(context, metric)
+            if numeric_name and _group_rows(context, dimension, numeric_name):
+                source = "numeric"
+                resolved_metric = numeric_name
+            else:
+                return (
+                    _metric_unavailable_message(metric),
+                    [{"source": "ai_context", "metric": metric, "available": False}],
+                    None,
+                )
+        value = _comparison_value(context, dimension, resolved_metric, source, label)
+        if value is None:
+            continue
+        answer = (
+            f"**{label} {_pretty(resolved_metric)}: {_format_metric(resolved_metric, value)}**\n\n"
+            f"Calculated from the full-dataset **{_pretty(dimension)}** aggregates."
+        )
+        evidence = [{
+            "source": "ai_context.group_performance",
+            "dimension": dimension,
+            "group": label,
+            "metric": resolved_metric,
+            "value": value,
+            "source_type": source,
+        }]
+        return answer, evidence, "kpi"
+    return None
+
+
 def analyze_question(
 
     question: str,
 
     dataset_result: Optional[Dict[str, Any]] = None,
+
+    conversation: Optional[List[Dict[str, Any]]] = None,
 
 ) -> Dict[str, Any]:
 
@@ -1635,6 +1812,12 @@ def analyze_question(
     dashboard = result.get("dashboard") or {}
 
     module = str(result.get("module") or context.get("module") or "")
+
+    original_question = question
+
+    question, conversation_resolution = _resolve_conversation_question(
+        question, conversation, context if isinstance(context, dict) else {}
+    )
 
     qtype = _question_type(question)
 
@@ -1654,7 +1837,13 @@ def analyze_question(
 
     if context_available:
 
-        if qtype == "quality":
+        group_answer = _answer_group_value(question, context)
+
+        if group_answer is not None and qtype not in {"compare", "top", "bottom", "summary", "recommendation", "quality", "trend", "correlation", "anomaly"}:
+
+            answer, evidence, chart = group_answer
+
+        elif qtype == "quality":
 
             answer, evidence, chart = _answer_quality(context, dashboard)
 
@@ -1768,7 +1957,11 @@ def analyze_question(
 
         "answer": answer,
 
-        "question": question,
+        "question": original_question,
+
+        "resolved_question": question,
+
+        "conversation_resolution": conversation_resolution,
 
         "intent": qtype,
 
@@ -1776,7 +1969,7 @@ def analyze_question(
 
         "suggested_chart": chart,
 
-        "engine": "nexus-ai-analyst-v1.2",
+        "engine": "nexus-ai-analyst-v1.3",
 
         "context_version": context.get("version") if isinstance(context, dict) else None,
 
