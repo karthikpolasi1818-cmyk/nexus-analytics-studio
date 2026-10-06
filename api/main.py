@@ -5,6 +5,7 @@ from __future__ import annotations
 from executive_intelligence_service import build_executive_intelligence
 
 from advanced_ai_service import analyze_question
+from ai_context_service import build_ai_context
 
 
 
@@ -1998,6 +1999,70 @@ async def analyze(
 
     # =====================================================
 
+
+
+    # AI ANALYST FULL-DATA CONTEXT
+
+
+
+    # =====================================================
+
+
+
+
+    try:
+
+
+
+        ai_context = build_ai_context(
+
+
+
+            df,
+
+
+
+            module,
+
+
+
+        )
+
+
+
+
+    except Exception as exc:
+
+
+
+        ai_context = {
+
+
+
+            "version": "1.1",
+
+
+
+            "available": False,
+
+
+
+            "module": module,
+
+
+
+            "error": str(exc),
+
+
+
+        }
+
+
+
+
+
+    # =====================================================
+
     # NEXT.JS TABLE PREVIEW
 
     # =====================================================
@@ -2129,6 +2194,8 @@ async def analyze(
         "dashboard": dashboard,
 
 
+
+        "ai_context": ai_context,
 
         "preview": preview,
 
