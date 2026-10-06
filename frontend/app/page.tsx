@@ -51,6 +51,64 @@ import {
   useState,
 } from "react";
 
+
+function renderInlineMarkdown(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return <strong key={index} className="font-semibold text-white">{part.slice(2, -2)}</strong>;
+    }
+    return <span key={index}>{part}</span>;
+  });
+}
+
+function AIMessageContent({ content }: { content: string }) {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+
+  return (
+    <div className="space-y-2 break-words">
+      {lines.map((line, index) => {
+        const trimmed = line.trim();
+
+        if (!trimmed) {
+          return <div key={index} className="h-1" />;
+        }
+
+        const bullet = trimmed.match(/^[-*]\s+(.+)$/);
+        if (bullet) {
+          return (
+            <div key={index} className="flex gap-2">
+              <span className="mt-[1px] text-indigo-400">•</span>
+              <div>{renderInlineMarkdown(bullet[1])}</div>
+            </div>
+          );
+        }
+
+        const numbered = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
+        if (numbered) {
+          return (
+            <div key={index} className="flex gap-2">
+              <span className="min-w-5 font-medium text-indigo-400">{numbered[1]}.</span>
+              <div>{renderInlineMarkdown(numbered[2])}</div>
+            </div>
+          );
+        }
+
+        const heading = trimmed.match(/^#{1,4}\s+(.+)$/);
+        if (heading) {
+          return (
+            <div key={index} className="pt-1 font-semibold text-white">
+              {renderInlineMarkdown(heading[1])}
+            </div>
+          );
+        }
+
+        return <div key={index}>{renderInlineMarkdown(line)}</div>;
+      })}
+    </div>
+  );
+}
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   "http://127.0.0.1:8000";
@@ -2178,7 +2236,7 @@ th{background:#f4f6f8}
                             : "border border-white/[0.08] bg-white/[0.04] text-gray-200"
                         }`}
                       >
-                        <pre className="whitespace-pre-wrap font-sans">{message.content}</pre>
+                        <AIMessageContent content={message.content} />
                       </div>
                     ))}
 

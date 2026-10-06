@@ -2,7 +2,7 @@
 
 NEXUS Analytics Studio
 
-Advanced AI Analyst v1.1
+Advanced AI Analyst v1.2
 
 
 
@@ -1021,109 +1021,276 @@ def _answer_anomaly(context: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]],
 
 
 
-def _extract_compare_values(question: str, dimension: str, context: Dict[str, Any]) -> List[str]:
-
+def _category_candidates(context: Dict[str, Any], dimension: str) -> List[str]:
+    """Return known categorical values for a dimension from full-dataset context."""
     categories = context.get("categorical_statistics") or {}
-
     payload = categories.get(dimension) or {}
+    values: List[str] = []
+    for item in payload.get("top_values", []) or []:
+        if not isinstance(item, dict) or item.get("value") is None:
+            continue
+        label = str(item.get("value"))
+        if label not in values:
+            values.append(label)
 
-    candidates = [str(item.get("value")) for item in payload.get("top_values", []) if item.get("value") is not None]
+    # group_performance can contain values beyond categorical top_values.
+    dimension_data = (context.get("group_performance") or {}).get(dimension) or {}
+    for rows in dimension_data.values():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict) and row.get("value") is not None:
+                label = str(row.get("value"))
+                if label not in values:
+                    values.append(label)
+    return values
 
+
+def _values_mentioned(question: str, candidates: List[str]) -> List[str]:
+    """Find categorical values explicitly mentioned in the question."""
     q = _norm(question)
-
-    matches = [candidate for candidate in candidates if _norm(candidate) in q]
-
-    return matches[:2]
-
-
-
-
-
-def _answer_compare(question: str, context: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
-
-    dimension = _requested_dimension(question, context)
-
-    metric, source = _requested_metric(question, context)
-
-    if not dimension or not metric:
-
-        return "I could not identify the comparison dimension and metric.", [], None
+    matches: List[Tuple[int, int, str]] = []
+    for candidate in candidates:
+        normalized = _norm(candidate)
+        if not normalized:
+            continue
+        # Boundary-aware matching prevents short labels from matching inside words.
+        match = re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", q)
+        if match:
+            matches.append((match.start(), -len(normalized), candidate))
+    matches.sort()
+    values: List[str] = []
+    for _, _, candidate in matches:
+        if candidate not in values:
+            values.append(candidate)
+    return values
 
 
+def _detect_compare_dimension_and_values(
+    question: str,
+    context: Dict[str, Any],
+) -> Tuple[Optional[str], List[str]]:
+    """
+    Resolve the comparison dimension from the values named by the user.
 
-    
-    if source == "unavailable":
-        return _metric_unavailable_message(metric), [{"source": "ai_context", "metric": metric, "available": False}], None
+    Example: "Compare Google vs Meta" resolves Channel when Google and Meta are
+    Channel values, even though the word "channel" is absent from the question.
+    """
+    groups = context.get("group_performance") or {}
+    categories = context.get("categorical_statistics") or {}
+    dimensions: List[str] = []
+    for name in list(groups.keys()) + list(categories.keys()):
+        if name not in dimensions:
+            dimensions.append(name)
 
-    rows = _derived_group_rows(context, dimension, metric) if source == "derived" else _group_rows(context, dimension, metric)
+    explicit_dimension = _requested_dimension(question, context)
+    scored: List[Tuple[int, int, str, List[str]]] = []
+    for index, dimension in enumerate(dimensions):
+        values = _values_mentioned(question, _category_candidates(context, dimension))
+        if values:
+            bonus = 1 if explicit_dimension == dimension else 0
+            scored.append((len(values), bonus, dimension, values))
 
-    if not rows:
+    if scored:
+        # Prefer the dimension containing the most explicitly named values.
+        scored.sort(key=lambda item: (item[0], item[1], -dimensions.index(item[2])), reverse=True)
+        best = scored[0]
+        if best[0] >= 2:
+            return best[2], best[3][:2]
 
-        return f"No {_pretty(metric)} comparison series is available by {_pretty(dimension)}.", [], None
+    if explicit_dimension:
+        return explicit_dimension, _values_mentioned(
+            question, _category_candidates(context, explicit_dimension)
+        )[:2]
+
+    return None, []
 
 
+def _comparison_metric_candidates(
+    question: str,
+    context: Dict[str, Any],
+    dimension: str,
+    module: str = "",
+) -> List[Tuple[str, str]]:
+    """Choose explicit or business-relevant metrics that can be compared by dimension."""
+    explicit = _explicit_metric(question)
+    if explicit:
+        derived = context.get("derived_metrics") or {}
+        if explicit in derived and _derived_group_rows(context, dimension, explicit):
+            return [(explicit, "derived")]
+        numeric_name = _numeric_metric_name(context, explicit)
+        if numeric_name and _group_rows(context, dimension, numeric_name):
+            return [(numeric_name, "numeric")]
+        return [(explicit, "unavailable")]
 
-    values = _extract_compare_values(question, dimension, context)
+    module_norm = _norm(module)
+    priorities: List[str] = []
+    for module_key, values in MODULE_METRIC_PRIORITIES.items():
+        if module_key in module_norm:
+            priorities = values
+            break
 
-    row_map = {str(row.get("value")): _num(row.get("metric_value")) for row in rows}
+    # Marketing comparisons are most useful as a small business-performance scorecard.
+    if "marketing" in module_norm:
+        priorities = [
+            "revenue", "spend", "roas", "conversions",
+            "conversion_rate", "ctr", "clicks", "impressions",
+        ]
 
-    if len(values) < 2:
+    selected: List[Tuple[str, str]] = []
+    seen: set[str] = set()
+    for canonical in priorities:
+        if canonical in seen:
+            continue
+        if _derived_group_rows(context, dimension, canonical):
+            selected.append((canonical, "derived"))
+            seen.add(canonical)
+        else:
+            numeric_name = _numeric_metric_name(context, canonical)
+            if numeric_name and _group_rows(context, dimension, numeric_name):
+                selected.append((numeric_name, "numeric"))
+                seen.add(canonical)
+        if len(selected) >= 6:
+            break
 
-        # If the question did not name two categories, compare the two strongest available groups.
+    if not selected:
+        dimension_data = (context.get("group_performance") or {}).get(dimension) or {}
+        for metric in dimension_data:
+            if _group_rows(context, dimension, metric):
+                selected.append((metric, "numeric"))
+            if len(selected) >= 4:
+                break
+    return selected
 
-        usable = [(name, value) for name, value in row_map.items() if value is not None]
 
+def _comparison_value(
+    context: Dict[str, Any],
+    dimension: str,
+    metric: str,
+    source: str,
+    label: str,
+) -> Optional[float]:
+    rows = (
+        _derived_group_rows(context, dimension, metric)
+        if source == "derived"
+        else _group_rows(context, dimension, metric)
+    )
+    wanted = _norm(label)
+    for row in rows:
+        if _norm(row.get("value")) == wanted:
+            return _num(row.get("metric_value"))
+    return None
+
+
+def _answer_compare(
+    question: str,
+    context: Dict[str, Any],
+    module: str = "",
+) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
+    dimension, values = _detect_compare_dimension_and_values(question, context)
+
+    if not dimension:
+        return (
+            "I could not determine which dataset dimension the requested values belong to.",
+            [],
+            None,
+        )
+
+    metrics = _comparison_metric_candidates(question, context, dimension, module)
+    if metrics and metrics[0][1] == "unavailable":
+        return (
+            _metric_unavailable_message(metrics[0][0]),
+            [{"source": "ai_context", "metric": metrics[0][0], "available": False}],
+            None,
+        )
+
+    # If two values were not named, retain the previous behavior and use the
+    # strongest two groups on the first available comparison metric.
+    if len(values) < 2 and metrics:
+        metric, source = metrics[0]
+        rows = (
+            _derived_group_rows(context, dimension, metric)
+            if source == "derived"
+            else _group_rows(context, dimension, metric)
+        )
+        usable = [
+            (str(row.get("value")), _num(row.get("metric_value")))
+            for row in rows
+            if row.get("value") is not None
+        ]
+        usable = [(name, value) for name, value in usable if value is not None]
         usable.sort(key=lambda item: item[1], reverse=True)
-
         values = [item[0] for item in usable[:2]]
 
-
-
     if len(values) < 2:
-
-        return "At least two comparable groups are required.", [], None
-
-
+        return (
+            f"I found the {_pretty(dimension)} dimension, but could not identify two values to compare.",
+            [],
+            None,
+        )
 
     a_name, b_name = values[0], values[1]
+    evidence_metrics: Dict[str, Dict[str, Any]] = {}
+    lines: List[str] = []
+    explicit_metric = _explicit_metric(question)
 
-    a, b = row_map.get(a_name), row_map.get(b_name)
+    for metric, source in metrics:
+        a = _comparison_value(context, dimension, metric, source, a_name)
+        b = _comparison_value(context, dimension, metric, source, b_name)
+        if a is None or b is None:
+            continue
+        evidence_metrics[metric] = {a_name: a, b_name: b, "source_type": source}
+        difference = a - b
+        if difference > 0:
+            leader = a_name
+        elif difference < 0:
+            leader = b_name
+        else:
+            leader = "Tie"
+        lines.append(
+            f"- **{_pretty(metric)}:** {a_name} = **{_format_metric(metric, a)}**; "
+            f"{b_name} = **{_format_metric(metric, b)}**"
+            + (f" — **{leader}** is higher." if leader != "Tie" else " — **Tie**.")
+        )
 
-    if a is None or b is None:
+    if not lines:
+        return (
+            f"I found **{a_name}** and **{b_name}** under **{_pretty(dimension)}**, "
+            "but no shared numeric comparison metric was available.",
+            [],
+            None,
+        )
 
-        return "The requested groups were found, but their metric values were unavailable.", [], None
-
-
-
-    difference = a - b
-
-    if difference > 0:
-
-        conclusion = f"**{a_name}** is higher by **{_format_metric(metric, abs(difference))}**."
-
-    elif difference < 0:
-
-        conclusion = f"**{b_name}** is higher by **{_format_metric(metric, abs(difference))}**."
-
+    if explicit_metric and len(lines) == 1:
+        metric = next(iter(evidence_metrics))
+        values_map = evidence_metrics[metric]
+        a = values_map[a_name]
+        b = values_map[b_name]
+        difference = a - b
+        if difference > 0:
+            conclusion = f"**{a_name}** is higher by **{_format_metric(metric, abs(difference))}**."
+        elif difference < 0:
+            conclusion = f"**{b_name}** is higher by **{_format_metric(metric, abs(difference))}**."
+        else:
+            conclusion = "Both groups have the same value."
+        answer = (
+            f"Comparing **{a_name}** vs **{b_name}** on **{_pretty(metric)}**: "
+            f"{a_name} = **{_format_metric(metric, a)}**, "
+            f"{b_name} = **{_format_metric(metric, b)}**. {conclusion}"
+        )
     else:
+        answer = (
+            f"**{a_name} vs {b_name} — {_pretty(dimension)} comparison**\n\n"
+            + "\n".join(lines)
+        )
 
-        conclusion = "Both groups have the same value."
-
-
-
-    answer = (
-
-        f"Comparing **{a_name}** vs **{b_name}** on **{_pretty(metric)}**: "
-
-        f"{a_name} = **{_format_metric(metric, a)}**, "
-
-        f"{b_name} = **{_format_metric(metric, b)}**. {conclusion}"
-
-    )
-
-    return answer, [{"source": "ai_context.group_performance", "dimension": dimension, "metric": metric, "values": {a_name: a, b_name: b}}], "comparison"
-
-
+    evidence = [{
+        "source": "ai_context.group_performance",
+        "dimension": dimension,
+        "values": [a_name, b_name],
+        "metrics": evidence_metrics,
+    }]
+    return answer, evidence, "comparison"
 
 
 
@@ -1505,7 +1672,7 @@ def analyze_question(
 
         elif qtype == "compare":
 
-            answer, evidence, chart = _answer_compare(question, context)
+            answer, evidence, chart = _answer_compare(question, context, module)
 
         elif qtype == "top":
 
@@ -1609,7 +1776,7 @@ def analyze_question(
 
         "suggested_chart": chart,
 
-        "engine": "nexus-ai-analyst-v1.1.1",
+        "engine": "nexus-ai-analyst-v1.2",
 
         "context_version": context.get("version") if isinstance(context, dict) else None,
 
